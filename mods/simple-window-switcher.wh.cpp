@@ -15,15 +15,18 @@
 # Simple Window Switcher
 A lightweight Alt+Tab replacement for Windows, ported from the
 [Simple Window Switcher](https://github.com/valinet/sws) project.
+Additional improvements made by [Asteski](https://github.com/Asteski).
 
 ## Features
 - Grid layout with live DWM thumbnail previews
+- Different Task List and Heard Content layout modes (horizontal/vertical, icon+title arrangement)
 - Keyboard navigation (Tab/Shift+Tab, Arrow keys, Enter, Esc)
 - Mouse click to select, scroll wheel to cycle
 - Alt+Ctrl+Tab sticky mode
 - Theme support (None/Backdrop Acrylic)
 - Works with elevated/admin applications
 - Dark/light mode auto-detection
+- Custom border colors with optional Windows accent color
 - DPI-aware, multi-monitor aware
 */
 // ==/WindhawkModReadme==
@@ -51,9 +54,25 @@ A lightweight Alt+Tab replacement for Windows, ported from the
   - none: Do not round
   - round: Round
   - roundSmall: Round small
+- taskListOrientation: horizontal
+  $name: Task List Orientation
+  $description: Arrange tasks left-to-right or top-to-bottom
+  $options:
+  - horizontal: Horizontal
+  - vertical: Vertical
+- headerContentMode: horizontal
+  $name: Header Content Mode
+  $description: Layout of the task header icon and title.
+  $options:
+  - horizontal: Horizontal
+  - vertical: Vertical
+  - verticalLarge: Vertical with large icons
 - rowHeight: 230
   $name: Row Height
   $description: Total height of each thumbnail row in pixels (before DPI scaling). Default 230 matches ExplorerPatcher.
+- rowWidth: 0
+  $name: Row Width
+  $description: Width of each thumbnail tile in pixels (before DPI scaling). Set to 0 for automatic width based on window aspect ratio.
 - showThumbnails: true
   $name: Show Thumbnails
   $description: Show DWM live thumbnail previews of windows
@@ -73,9 +92,15 @@ A lightweight Alt+Tab replacement for Windows, ported from the
   - never: Never
   - always: Always
   - stickyOnly: Only in sticky mode
+- borderColor: "#FFFFFF"
+  $name: Border Color
+  $description: Border color in HEX format
 - useAccentColor: false
   $name: Use Accent Color for Borders
   $description: Use Windows accent color for selection and hover borders
+- centerTaskContent: false
+  $name: Center Task Icon and Title
+  $description: Center the icon and title together in each task row.
 - primaryMonitorOnly: false
   $name: Always Display Switcher on Primary Monitor
 - perMonitorWindows: false
@@ -138,10 +163,12 @@ struct WindowEntry {
     SIZE effectiveSourceSize;  // Source size after cropping invisible frame
 };
 struct Settings {
-    WCHAR theme[32]; WCHAR colorScheme[32]; WCHAR cornerPreference[32]; WCHAR scrollWheelBehavior[32];
-    int opacity; int rowHeight;
+    WCHAR theme[32]; WCHAR colorScheme[32]; WCHAR cornerPreference[32]; WCHAR scrollWheelBehavior[32]; WCHAR taskListOrientation[32]; WCHAR headerContentMode[32];
+    WCHAR borderColor[16];
+    int opacity; int rowHeight; int rowWidth;
     int maxWidthPercent; int maxHeightPercent; int windowPadding; int showDelay;
     bool showThumbnails; bool useAccentColor; bool primaryMonitorOnly; bool perMonitorWindows;
+    bool centerTaskContent;
 };
 
 static HWND g_hSwitcher = NULL;
@@ -171,10 +198,49 @@ static bool g_isCloseHovered = false;
 
 static bool ThemeIs(const WCHAR* v) { return wcscmp(g_settings.theme, v) == 0; }
 static bool ScrollIs(const WCHAR* v) { return wcscmp(g_settings.scrollWheelBehavior, v) == 0; }
+static bool LayoutIsVertical() { return wcscmp(g_settings.taskListOrientation, L"vertical") == 0; }
+static bool HeaderModeIs(const WCHAR* v) { return wcscmp(g_settings.headerContentMode, v) == 0; }
+static bool HeaderIsVertical() {
+    return HeaderModeIs(L"vertical") || HeaderModeIs(L"verticalLarge");
+}
+static int GetHeaderIconSizePx() {
+    if (HeaderModeIs(L"verticalLarge")) {
+        return MulDiv(32, g_dpiX, 96);
+    }
+    return MulDiv(SWS_ICON_SIZE, g_dpiX, 96);
+}
+static int GetHeaderTitleHeightPx() {
+    return MulDiv(18, g_dpiY, 96);
+}
+static int GetHeaderRowHeightPx() {
+    if (!HeaderIsVertical()) {
+        return MulDiv(SWS_ROW_TITLE_HEIGHT, g_dpiY, 96);
+    }
+
+    int gap = MulDiv(4, g_dpiY, 96);
+    return GetHeaderIconSizePx() + gap + GetHeaderTitleHeightPx();
+}
 static INT GetCornerPref() {
     if (wcscmp(g_settings.cornerPreference, L"none") == 0) return 1;
     if (wcscmp(g_settings.cornerPreference, L"roundSmall") == 0) return 3;
     return 2; // Default to round
+}
+
+static int GetUiCornerRadiusPx() {
+    if (wcscmp(g_settings.cornerPreference, L"none") == 0) {
+        return 0;
+    }
+    if (wcscmp(g_settings.cornerPreference, L"roundSmall") == 0) {
+        return MulDiv(4, g_dpiX, 96);
+    }
+    return MulDiv(8, g_dpiX, 96);
+}
+
+static int GetCloseButtonCornerRadiusPx() {
+    if (wcscmp(g_settings.cornerPreference, L"none") == 0) {
+        return 0;
+    }
+    return MulDiv(4, g_dpiX, 96);
 }
 static bool ShouldUseDarkMode() {
     if (wcscmp(g_settings.colorScheme, L"light") == 0) return false;
@@ -190,6 +256,34 @@ static COLORREF GetAccentColor() {
         L"AccentColor", RRF_RT_REG_DWORD, NULL, &col, &sz) == ERROR_SUCCESS) return col & 0x00FFFFFF;
     return RGB(0, 120, 215);
 }
+
+static bool ParseHexColor(const WCHAR* value, COLORREF* outColor) {
+    if (!value) {
+        return false;
+    }
+
+    const WCHAR* p = value;
+    size_t len = wcslen(p);
+    if (len == 7 && p[0] == L'#') {
+        p++;
+        len = 6;
+    }
+
+    if (len != 6) {
+        return false;
+    }
+
+    unsigned int rgb = 0;
+    if (swscanf_s(p, L"%06x", &rgb) != 1) {
+        return false;
+    }
+
+    if (outColor) {
+        *outColor = RGB((rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF);
+    }
+    return true;
+}
+
 static bool ResolveAPIs() {
     HMODULE h = GetModuleHandleW(L"user32.dll");
     if (!h) return false;
@@ -461,7 +555,7 @@ static void ComputeLayout(HMONITOR hMon) {
     int padLeft      = DpiScale(SWS_PAD_LEFT, dpiX);
     int padRight     = DpiScale(SWS_PAD_RIGHT, dpiX);
     int padDivider   = DpiScale(SWS_PAD_DIVIDER, dpiY);
-    int rowTitleH    = DpiScale(SWS_ROW_TITLE_HEIGHT, dpiY);
+    int rowTitleH    = GetHeaderRowHeightPx();
 
     // EP: cbThumbnailAvailableHeight = cbRowHeight - cbRowTitleHeight - cbTopPadding - 2 * cbBottomPadding
     // All values are DPI-scaled at this point (matching EP lines 826-844)
@@ -489,148 +583,238 @@ static void ComputeLayout(HMONITOR hMon) {
 
     int curX = initialLeft + masterPad;
     int curY = initialTop + masterPad;
-    int maxRowW = 0;
     int placedCount = n; // Track how many windows were actually placed
 
-    for (int idx = 0; idx < n; idx++) {
-        // EP-style: start placing from g_layoutStartIndex, wrapping around
-        int i = (g_layoutStartIndex + idx) % n;
-        auto& w = g_windows[i];
-
-        // Force a row break at the wrap boundary: when the layout has wrapped
-        // from the end of the list back to the start, don't allow those wrapped
-        // windows to continue on the same row as the pre-wrap windows.
-        if (g_layoutStartIndex > 0 && idx > 0 && i < g_layoutStartIndex
-            && ((g_layoutStartIndex + idx - 1) % n) >= g_layoutStartIndex
-            && curX > initialLeft + masterPad) {
-            // We just crossed the wrap boundary — force new row
-            if (curX - initialLeft > maxRowW) maxRowW = curX - initialLeft;
-            curX = initialLeft + masterPad;
-            // Height overflow check for the new row
-            if (curY + 2 * bottomInc - initialTop > maxH - masterPad) {
-                for (int jj = idx; jj < n; jj++) {
-                    int ji = (g_layoutStartIndex + jj) % n;
-                    g_windows[ji].sourceSize = {0, 0};
-                    g_windows[ji].rcCell = {0, 0, 0, 0};
-                    g_windows[ji].rcThumbActual = {0, 0, 0, 0};
-                    g_windows[ji].rcThumb = {0, 0, 0, 0};
-                    if (g_windows[ji].hThumb) {
-                        DwmUnregisterThumbnail(g_windows[ji].hThumb);
-                        g_windows[ji].hThumb = NULL;
-                    }
-                }
-                placedCount = idx;
-                break;
+    auto truncateRemaining = [&](int startIdx) {
+        for (int jj = startIdx; jj < n; jj++) {
+            int ji = (g_layoutStartIndex + jj) % n;
+            g_windows[ji].sourceSize = {0, 0};
+            g_windows[ji].rcCell = {0, 0, 0, 0};
+            g_windows[ji].rcThumbActual = {0, 0, 0, 0};
+            g_windows[ji].rcThumb = {0, 0, 0, 0};
+            if (g_windows[ji].hThumb) {
+                DwmUnregisterThumbnail(g_windows[ji].hThumb);
+                g_windows[ji].hThumb = NULL;
             }
-            curY = curY + bottomInc;
         }
-        int width = 0;
-        int original_width = 0;
+        placedCount = startIdx;
+    };
 
-        if (g_settings.showThumbnails && thumbH > 0) {
-            if (w.effectiveSourceSize.cx > 0 && w.effectiveSourceSize.cy > 0) {
-                width = (int)((double)w.effectiveSourceSize.cx * thumbH / w.effectiveSourceSize.cy);
+    if (!LayoutIsVertical()) {
+        int maxRowW = 0;
+
+        for (int idx = 0; idx < n; idx++) {
+            int i = (g_layoutStartIndex + idx) % n;
+            auto& w = g_windows[i];
+
+            if (g_layoutStartIndex > 0 && idx > 0 && i < g_layoutStartIndex
+                && ((g_layoutStartIndex + idx - 1) % n) >= g_layoutStartIndex
+                && curX > initialLeft + masterPad) {
+                if (curX - initialLeft > maxRowW) maxRowW = curX - initialLeft;
+                curX = initialLeft + masterPad;
+                if (curY + 2 * bottomInc - initialTop > maxH - masterPad) {
+                    truncateRemaining(idx);
+                    break;
+                }
+                curY = curY + bottomInc;
+            }
+
+            int width = 0;
+            int original_width = 0;
+
+            if (g_settings.showThumbnails && thumbH > 0) {
+                if (w.effectiveSourceSize.cx > 0 && w.effectiveSourceSize.cy > 0) {
+                    width = (int)((double)w.effectiveSourceSize.cx * thumbH / w.effectiveSourceSize.cy);
+                } else {
+                    width = thumbH;
+                }
+                if (width > maxTileW || width > w.effectiveSourceSize.cx) {
+                    original_width = width;
+                    if (width > maxTileW) width = maxTileW;
+                    if (w.effectiveSourceSize.cx > 0 && width > w.effectiveSourceSize.cx) width = w.effectiveSourceSize.cx;
+                }
             } else {
-                width = thumbH; // Fallback square
+                width = DpiScale(160, dpiX);
             }
-            // EP clamping: cap to maxTileWidth, then cap to effective source width
-            if (width > maxTileW || width > w.effectiveSourceSize.cx) {
-                original_width = width;
-                if (width > maxTileW) width = maxTileW;
-                if (w.effectiveSourceSize.cx > 0 && width > w.effectiveSourceSize.cx) width = w.effectiveSourceSize.cx;
+
+            if (g_settings.rowWidth > 0) {
+                width = DpiScale(g_settings.rowWidth, dpiX);
             }
-        } else {
-            // No thumbnails mode: use a fixed cell width
-            width = DpiScale(160, dpiX);
-        }
 
-        // Row wrapping: check if adding this cell exceeds monitor bounds
-        if (curX + width + rightInc - initialLeft > maxW - masterPad && curX > initialLeft + masterPad) {
-            if (curX - initialLeft > maxRowW) maxRowW = curX - initialLeft;
-            curX = initialLeft + masterPad;
+            if (curX + width + rightInc - initialLeft > maxW - masterPad && curX > initialLeft + masterPad) {
+                if (curX - initialLeft > maxRowW) maxRowW = curX - initialLeft;
+                curX = initialLeft + masterPad;
 
-            // EP height overflow check (lines 320-340): if adding the NEXT row
-            // would exceed maxHeight, stop placing further windows
-            if (curY + 2 * bottomInc - initialTop > maxH - masterPad) {
-                // Truncate: mark remaining windows as unplaced
-                for (int jj = idx; jj < n; jj++) {
-                    int ji = (g_layoutStartIndex + jj) % n;
-                    g_windows[ji].sourceSize = {0, 0};
-                    g_windows[ji].rcCell = {0, 0, 0, 0};
-                    g_windows[ji].rcThumbActual = {0, 0, 0, 0};
-                    g_windows[ji].rcThumb = {0, 0, 0, 0};
-                    if (g_windows[ji].hThumb) {
-                        DwmUnregisterThumbnail(g_windows[ji].hThumb);
-                        g_windows[ji].hThumb = NULL;
-                    }
+                if (curY + 2 * bottomInc - initialTop > maxH - masterPad) {
+                    truncateRemaining(idx);
+                    break;
                 }
-                placedCount = idx;
-                break;
+
+                curY = curY + bottomInc;
             }
 
-            curY = curY + bottomInc;
+            int actualThumbH = thumbH;
+            if (original_width > 0 && thumbH > 0) {
+                actualThumbH = (int)((double)width * thumbH / original_width);
+            }
+
+            w.rcCell.left   = curX - initialLeft + elemPadLeft;
+            w.rcCell.top    = curY - initialTop + elemPadTop;
+            w.rcCell.right  = curX + width + rightInc - initialLeft - elemPadRight;
+            w.rcCell.bottom = curY + bottomInc - initialTop - elemPadBot;
+            if (original_width > 0) {
+                w.rcCell.bottom -= (thumbH - actualThumbH);
+            }
+
+            if (g_settings.showThumbnails) {
+                w.rcThumbActual = { curX, curY, curX + width, curY + actualThumbH };
+                w.rcThumb = w.rcThumbActual;
+            }
+
+            curX = curX + width + rightInc;
+            placedCount = idx + 1;
         }
 
-        // Height adjustment if thumbnail was clamped
-        int actualThumbH = thumbH;
-        if (original_width > 0 && thumbH > 0) {
-            actualThumbH = (int)((double)width * thumbH / original_width);
-        }
+        if (curX - initialLeft > maxRowW) maxRowW = curX - initialLeft;
+        g_winW = maxRowW + masterPad;
+        g_winH = curY + bottomInc - initialTop + masterPad;
+        if (g_winW > maxW) g_winW = maxW;
 
-        // Compute rcCell (EP's rcWindow)
-        w.rcCell.left   = curX - initialLeft + elemPadLeft;
-        w.rcCell.top    = curY - initialTop + elemPadTop;
-        w.rcCell.right  = curX + width + rightInc - initialLeft - elemPadRight;
-        w.rcCell.bottom = curY + bottomInc - initialTop - elemPadBot;
-        if (original_width > 0) {
-            w.rcCell.bottom -= (thumbH - actualThumbH);
-        }
-
-        // Compute thumbnail rect
-        if (g_settings.showThumbnails) {
-            w.rcThumbActual = { curX, curY, curX + width, curY + actualThumbH };
-            w.rcThumb = w.rcThumbActual;
-        }
-
-        curX = curX + width + rightInc;
-        placedCount = idx + 1;
-    }
-
-    if (curX - initialLeft > maxRowW) maxRowW = curX - initialLeft;
-
-    // Compute final window size
-    g_winW = maxRowW + masterPad;
-    g_winH = curY + bottomInc - initialTop + masterPad;
-    if (g_winW > maxW) g_winW = maxW;
-
-    // Center rows: shift each row horizontally so items are centered
-    // Iterate in layout order (same as placement)
-    for (int idx = 0; idx < placedCount; idx++) {
-        int i = (g_layoutStartIndex + idx) % n;
-        auto& w = g_windows[i];
-        // Find all items on same row (same rcThumbActual.top)
-        int rowTop = w.rcThumbActual.top;
-        int rowMaxRight = 0;
-        for (int jdx = idx; jdx < placedCount; jdx++) {
-            int j = (g_layoutStartIndex + jdx) % n;
-            if (g_windows[j].rcThumbActual.top != rowTop) break;
-            if (g_windows[j].rcCell.right > rowMaxRight) rowMaxRight = g_windows[j].rcCell.right;
-        }
-        int diff = (g_winW - masterPad > rowMaxRight) ? (g_winW - masterPad - rowMaxRight) / 2 : 0;
-        if (diff > 0) {
+        for (int idx = 0; idx < placedCount; idx++) {
+            int i = (g_layoutStartIndex + idx) % n;
+            int rowTop = g_windows[i].rcCell.top;
+            int rowMaxRight = 0;
             for (int jdx = idx; jdx < placedCount; jdx++) {
                 int j = (g_layoutStartIndex + jdx) % n;
-                if (g_windows[j].rcThumbActual.top != rowTop) break;
-                g_windows[j].rcCell.left += diff;
-                g_windows[j].rcCell.right += diff;
-                g_windows[j].rcThumbActual.left += diff;
-                g_windows[j].rcThumbActual.right += diff;
-                g_windows[j].rcThumb.left += diff;
-                g_windows[j].rcThumb.right += diff;
+                if (g_windows[j].rcCell.top != rowTop) break;
+                if (g_windows[j].rcCell.right > rowMaxRight) rowMaxRight = g_windows[j].rcCell.right;
             }
+            int diff = (g_winW - masterPad > rowMaxRight) ? (g_winW - masterPad - rowMaxRight) / 2 : 0;
+            if (diff > 0) {
+                for (int jdx = idx; jdx < placedCount; jdx++) {
+                    int j = (g_layoutStartIndex + jdx) % n;
+                    if (g_windows[j].rcCell.top != rowTop) break;
+                    g_windows[j].rcCell.left += diff;
+                    g_windows[j].rcCell.right += diff;
+                    g_windows[j].rcThumbActual.left += diff;
+                    g_windows[j].rcThumbActual.right += diff;
+                    g_windows[j].rcThumb.left += diff;
+                    g_windows[j].rcThumb.right += diff;
+                }
+            }
+            while (idx + 1 < placedCount && g_windows[(g_layoutStartIndex + idx + 1) % n].rcCell.top == rowTop) idx++;
         }
-        // Skip to end of this row
-        while (idx + 1 < placedCount && g_windows[(g_layoutStartIndex + idx + 1) % n].rcThumbActual.top == rowTop) idx++;
+    } else {
+        int curColMaxW = 0;
+        int maxRight = 0;
+        int maxBottom = 0;
+
+        for (int idx = 0; idx < n; idx++) {
+            int i = (g_layoutStartIndex + idx) % n;
+            auto& w = g_windows[i];
+
+            if (g_layoutStartIndex > 0 && idx > 0 && i < g_layoutStartIndex
+                && ((g_layoutStartIndex + idx - 1) % n) >= g_layoutStartIndex
+                && curY > initialTop + masterPad) {
+                curY = initialTop + masterPad;
+                curX = curX + curColMaxW + rightInc;
+                curColMaxW = 0;
+                if (curX + rightInc - initialLeft > maxW - masterPad) {
+                    truncateRemaining(idx);
+                    break;
+                }
+            }
+
+            int width = 0;
+            int original_width = 0;
+
+            if (g_settings.showThumbnails && thumbH > 0) {
+                if (w.effectiveSourceSize.cx > 0 && w.effectiveSourceSize.cy > 0) {
+                    width = (int)((double)w.effectiveSourceSize.cx * thumbH / w.effectiveSourceSize.cy);
+                } else {
+                    width = thumbH;
+                }
+                if (width > maxTileW || width > w.effectiveSourceSize.cx) {
+                    original_width = width;
+                    if (width > maxTileW) width = maxTileW;
+                    if (w.effectiveSourceSize.cx > 0 && width > w.effectiveSourceSize.cx) width = w.effectiveSourceSize.cx;
+                }
+            } else {
+                width = DpiScale(160, dpiX);
+            }
+
+            if (g_settings.rowWidth > 0) {
+                width = DpiScale(g_settings.rowWidth, dpiX);
+            }
+
+            if (curY + bottomInc - initialTop > maxH - masterPad && curY > initialTop + masterPad) {
+                curY = initialTop + masterPad;
+                curX = curX + curColMaxW + rightInc;
+                curColMaxW = 0;
+                if (curX + width + rightInc - initialLeft > maxW - masterPad) {
+                    truncateRemaining(idx);
+                    break;
+                }
+            }
+
+            int actualThumbH = thumbH;
+            if (original_width > 0 && thumbH > 0) {
+                actualThumbH = (int)((double)width * thumbH / original_width);
+            }
+
+            w.rcCell.left   = curX - initialLeft + elemPadLeft;
+            w.rcCell.top    = curY - initialTop + elemPadTop;
+            w.rcCell.right  = curX + width + rightInc - initialLeft - elemPadRight;
+            w.rcCell.bottom = curY + bottomInc - initialTop - elemPadBot;
+            if (original_width > 0) {
+                w.rcCell.bottom -= (thumbH - actualThumbH);
+            }
+
+            if (g_settings.showThumbnails) {
+                w.rcThumbActual = { curX, curY, curX + width, curY + actualThumbH };
+                w.rcThumb = w.rcThumbActual;
+            }
+
+            if (width > curColMaxW) curColMaxW = width;
+            if (w.rcCell.right > maxRight) maxRight = w.rcCell.right;
+            if (w.rcCell.bottom > maxBottom) maxBottom = w.rcCell.bottom;
+
+            curY = curY + bottomInc;
+            placedCount = idx + 1;
+        }
+
+        g_winW = maxRight + masterPad;
+        g_winH = maxBottom + masterPad;
+        if (g_winW > maxW) g_winW = maxW;
+        if (g_winH > maxH) g_winH = maxH;
+
+        for (int idx = 0; idx < placedCount; idx++) {
+            int i = (g_layoutStartIndex + idx) % n;
+            int colLeft = g_windows[i].rcCell.left;
+            int colMaxBottom = 0;
+
+            for (int jdx = idx; jdx < placedCount; jdx++) {
+                int j = (g_layoutStartIndex + jdx) % n;
+                if (g_windows[j].rcCell.left != colLeft) break;
+                if (g_windows[j].rcCell.bottom > colMaxBottom) colMaxBottom = g_windows[j].rcCell.bottom;
+            }
+
+            int diff = (g_winH - masterPad > colMaxBottom) ? (g_winH - masterPad - colMaxBottom) / 2 : 0;
+            if (diff > 0) {
+                for (int jdx = idx; jdx < placedCount; jdx++) {
+                    int j = (g_layoutStartIndex + jdx) % n;
+                    if (g_windows[j].rcCell.left != colLeft) break;
+                    g_windows[j].rcCell.top += diff;
+                    g_windows[j].rcCell.bottom += diff;
+                    g_windows[j].rcThumbActual.top += diff;
+                    g_windows[j].rcThumbActual.bottom += diff;
+                    g_windows[j].rcThumb.top += diff;
+                    g_windows[j].rcThumb.bottom += diff;
+                }
+            }
+
+            while (idx + 1 < placedCount && g_windows[(g_layoutStartIndex + idx + 1) % n].rcCell.left == colLeft) idx++;
+        }
     }
 }
 
@@ -674,7 +858,72 @@ static void UnregisterThumbnails() {
 
 static COLORREF GetContourColor() {
     if (g_settings.useAccentColor) return GetAccentColor();
+
+    COLORREF parsed;
+    if (ParseHexColor(g_settings.borderColor, &parsed)) {
+        return parsed;
+    }
+
     return g_isDarkMode ? SWS_CONTOUR_DARK : SWS_CONTOUR_LIGHT;
+}
+
+static void MaskRectCorners(HDC hdc, const RECT& rc, int radiusPx) {
+    if (radiusPx <= 0) {
+        return;
+    }
+
+    int w = rc.right - rc.left;
+    int h = rc.bottom - rc.top;
+    if (w <= 0 || h <= 0) {
+        return;
+    }
+
+    int r = radiusPx;
+    if (r * 2 > w) r = w / 2;
+    if (r * 2 > h) r = h / 2;
+    if (r <= 0) {
+        return;
+    }
+
+    COLORREF bg = g_isDarkMode ? SWS_BG_DARK : SWS_BG_LIGHT;
+    // In layered mode, punch fully transparent corners to force thumbnail clipping.
+    BYTE alpha = ThemeIs(L"none") ? 0 : 255;
+
+    Gdiplus::Graphics graphics(hdc);
+    graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+    Gdiplus::SolidBrush brush(Gdiplus::Color(alpha, GetRValue(bg), GetGValue(bg), GetBValue(bg)));
+
+    int d = r * 2;
+    Gdiplus::GraphicsPath cutTl, cutTr, cutBr, cutBl;
+
+    cutTl.StartFigure();
+    cutTl.AddLine((Gdiplus::REAL)rc.left, (Gdiplus::REAL)rc.top + r, (Gdiplus::REAL)rc.left, (Gdiplus::REAL)rc.top);
+    cutTl.AddLine((Gdiplus::REAL)rc.left, (Gdiplus::REAL)rc.top, (Gdiplus::REAL)rc.left + r, (Gdiplus::REAL)rc.top);
+    cutTl.AddArc((Gdiplus::REAL)rc.left, (Gdiplus::REAL)rc.top, (Gdiplus::REAL)d, (Gdiplus::REAL)d, 270, -90);
+    cutTl.CloseFigure();
+
+    cutTr.StartFigure();
+    cutTr.AddLine((Gdiplus::REAL)rc.right - r, (Gdiplus::REAL)rc.top, (Gdiplus::REAL)rc.right, (Gdiplus::REAL)rc.top);
+    cutTr.AddLine((Gdiplus::REAL)rc.right, (Gdiplus::REAL)rc.top, (Gdiplus::REAL)rc.right, (Gdiplus::REAL)rc.top + r);
+    cutTr.AddArc((Gdiplus::REAL)rc.right - d, (Gdiplus::REAL)rc.top, (Gdiplus::REAL)d, (Gdiplus::REAL)d, 0, -90);
+    cutTr.CloseFigure();
+
+    cutBr.StartFigure();
+    cutBr.AddLine((Gdiplus::REAL)rc.right, (Gdiplus::REAL)rc.bottom - r, (Gdiplus::REAL)rc.right, (Gdiplus::REAL)rc.bottom);
+    cutBr.AddLine((Gdiplus::REAL)rc.right, (Gdiplus::REAL)rc.bottom, (Gdiplus::REAL)rc.right - r, (Gdiplus::REAL)rc.bottom);
+    cutBr.AddArc((Gdiplus::REAL)rc.right - d, (Gdiplus::REAL)rc.bottom - d, (Gdiplus::REAL)d, (Gdiplus::REAL)d, 90, -90);
+    cutBr.CloseFigure();
+
+    cutBl.StartFigure();
+    cutBl.AddLine((Gdiplus::REAL)rc.left + r, (Gdiplus::REAL)rc.bottom, (Gdiplus::REAL)rc.left, (Gdiplus::REAL)rc.bottom);
+    cutBl.AddLine((Gdiplus::REAL)rc.left, (Gdiplus::REAL)rc.bottom, (Gdiplus::REAL)rc.left, (Gdiplus::REAL)rc.bottom - r);
+    cutBl.AddArc((Gdiplus::REAL)rc.left, (Gdiplus::REAL)rc.bottom - d, (Gdiplus::REAL)d, (Gdiplus::REAL)d, 180, -90);
+    cutBl.CloseFigure();
+
+    graphics.FillPath(&brush, &cutTl);
+    graphics.FillPath(&brush, &cutTr);
+    graphics.FillPath(&brush, &cutBr);
+    graphics.FillPath(&brush, &cutBl);
 }
 
 // Draw a sharp rectangular contour using StretchDIBits (EP's _DrawContour approach)
@@ -689,6 +938,40 @@ static void DrawContour(HDC hdc, RECT rc, int contourSize, int direction) {
     RGBQUAD px = { b, g, r, 0xFF };
 
     int t = direction * (contourSize * g_dpiX / 96);
+
+    int cornerRadius = GetUiCornerRadiusPx();
+    if (cornerRadius > 0 && direction > 0) {
+        int penWidth = contourSize * g_dpiX / 96;
+        if (penWidth < 1) penWidth = 1;
+
+        RECT drawRc = rc;
+        int width = drawRc.right - drawRc.left - penWidth;
+        int height = drawRc.bottom - drawRc.top - penWidth;
+        if (width <= 0 || height <= 0) {
+            return;
+        }
+
+        if (cornerRadius * 2 > width) cornerRadius = width / 2;
+        if (cornerRadius * 2 > height) cornerRadius = height / 2;
+
+        Gdiplus::Graphics graphics(hdc);
+        graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+        Gdiplus::Pen pen(Gdiplus::Color(255, r, g, b), (Gdiplus::REAL)penWidth);
+
+        Gdiplus::REAL left = (Gdiplus::REAL)drawRc.left + penWidth / 2.0f;
+        Gdiplus::REAL top = (Gdiplus::REAL)drawRc.top + penWidth / 2.0f;
+        Gdiplus::REAL w = (Gdiplus::REAL)width;
+        Gdiplus::REAL h = (Gdiplus::REAL)height;
+        Gdiplus::REAL d = (Gdiplus::REAL)(cornerRadius * 2);
+        Gdiplus::GraphicsPath path;
+        path.AddArc(left, top, d, d, 180, 90);
+        path.AddArc(left + w - d, top, d, d, 270, 90);
+        path.AddArc(left + w - d, top + h - d, d, d, 0, 90);
+        path.AddArc(left, top + h - d, d, d, 90, 90);
+        path.CloseFigure();
+        graphics.DrawPath(&pen, &path);
+        return;
+    }
 
     if (direction < 0) {
         // Outer contour (EP: SWS_CONTOUR_OUTER)
@@ -727,8 +1010,9 @@ static void DrawSwitcherContent(HDC hdc, bool fillBg) {
     // DPI-scale layout constants for drawing
     int padLeft    = DpiScale(SWS_PAD_LEFT, g_dpiX);
     int padTop     = DpiScale(SWS_PAD_TOP, g_dpiY);
-    int rowTitleH  = DpiScale(SWS_ROW_TITLE_HEIGHT, g_dpiY);
-    int iconSz     = DpiScale(SWS_ICON_SIZE, g_dpiX);
+    int rowTitleH  = GetHeaderRowHeightPx();
+    int iconSz     = GetHeaderIconSizePx();
+    int cornerRadius = GetUiCornerRadiusPx();
 
     for (int i = 0; i < (int)g_windows.size(); i++) {
         auto& e = g_windows[i];
@@ -747,19 +1031,40 @@ static void DrawSwitcherContent(HDC hdc, bool fillBg) {
             DrawContour(hdc, e.rcThumbActual, 1, -1);
         }
 
+        if (g_settings.showThumbnails && cornerRadius > 0) {
+            MaskRectCorners(hdc, e.rcThumbActual, cornerRadius);
+            RECT inset = e.rcThumbActual;
+            InflateRect(&inset, -1, -1);
+            MaskRectCorners(hdc, inset, cornerRadius);
+        }
+
         // Close button (positioned at top-right of the cell, in title area)
         if (i == g_hoverIndex) {
             int btnSz = DpiScale(24, g_dpiX);
             int bx = e.rcCell.right - padLeft - btnSz;
-            int by = e.rcCell.top + padTop + (rowTitleH - btnSz) / 2;
+            int by = HeaderIsVertical() ? (e.rcCell.top + padTop)
+                                        : (e.rcCell.top + padTop + (rowTitleH - btnSz) / 2);
 
             if (g_isCloseHovered) {
-                // Red background for close button
-                BITMAPINFO bi = {}; bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-                bi.bmiHeader.biWidth = 1; bi.bmiHeader.biHeight = 1;
-                bi.bmiHeader.biPlanes = 1; bi.bmiHeader.biBitCount = 32; bi.bmiHeader.biCompression = BI_RGB;
-                RGBQUAD redPx = { 28, 43, 196, 0xFF };
-                StretchDIBits(hdc, bx, by, btnSz, btnSz, 0, 0, 1, 1, &redPx, &bi, DIB_RGB_COLORS, SRCCOPY);
+                // Red rounded background for close button
+                Gdiplus::Graphics graphics(hdc);
+                graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+                int btnRadius = GetCloseButtonCornerRadiusPx();
+                Gdiplus::SolidBrush redBrush(Gdiplus::Color(255, 196, 43, 28));
+                if (btnRadius > 0) {
+                    if (btnRadius * 2 > btnSz) btnRadius = btnSz / 2;
+                    Gdiplus::GraphicsPath path;
+                    Gdiplus::REAL d = (Gdiplus::REAL)(btnRadius * 2);
+                    path.AddArc((Gdiplus::REAL)bx, (Gdiplus::REAL)by, d, d, 180, 90);
+                    path.AddArc((Gdiplus::REAL)(bx + btnSz) - d, (Gdiplus::REAL)by, d, d, 270, 90);
+                    path.AddArc((Gdiplus::REAL)(bx + btnSz) - d, (Gdiplus::REAL)(by + btnSz) - d, d, d, 0, 90);
+                    path.AddArc((Gdiplus::REAL)bx, (Gdiplus::REAL)(by + btnSz) - d, d, d, 90, 90);
+                    path.CloseFigure();
+                    graphics.FillPath(&redBrush, &path);
+                } else {
+                    graphics.FillRectangle(&redBrush, (Gdiplus::REAL)bx, (Gdiplus::REAL)by,
+                                           (Gdiplus::REAL)btnSz, (Gdiplus::REAL)btnSz);
+                }
             }
 
             // Draw X with GDI+ for smooth diagonal lines only
@@ -772,23 +1077,78 @@ static void DrawSwitcherContent(HDC hdc, bool fillBg) {
             graphics.DrawLine(&xPen, bx + btnSz - p, by + p, bx + p, by + btnSz - p);
         }
 
-        // Icon
-        int iconX = e.rcCell.left + padLeft;
+        int closeBtnReserve = DpiScale(24, g_dpiX) + padLeft;
+        // Keep centered header content stable: reserve close-button space consistently.
+        int btnReserve = ((g_settings.centerTaskContent && !HeaderIsVertical()) || i == g_hoverIndex)
+                 ? closeBtnReserve
+                 : 0;
+        int contentLeft = e.rcCell.left + padLeft;
+        int contentRight = e.rcCell.right - padLeft - btnReserve;
+        if (contentRight < contentLeft) contentRight = contentLeft;
+
+        int iconX = contentLeft;
         int iconY = e.rcCell.top + padTop + (rowTitleH - iconSz) / 2;
+        int textLeft = iconX + iconSz + padLeft;
+        int textRight = contentRight;
+        int textTop = e.rcCell.top + padTop;
+        int textBottom = textTop + rowTitleH;
+
+        if (HeaderIsVertical()) {
+            int availableW = contentRight - contentLeft;
+            if (availableW < 0) availableW = 0;
+
+            iconX = contentLeft + fmax(0, (availableW - iconSz) / 2);
+            iconY = e.rcCell.top + padTop;
+
+            int headerGap = DpiScale(4, g_dpiY);
+            int textH = GetHeaderTitleHeightPx();
+            textTop = iconY + iconSz + headerGap;
+            textBottom = textTop + textH;
+            textLeft = contentLeft;
+            textRight = contentRight;
+        } else if (g_settings.centerTaskContent) {
+            int availableW = contentRight - contentLeft;
+            if (availableW < 0) availableW = 0;
+
+            int gap = padLeft;
+            int textMaxW = availableW - iconSz - gap;
+            if (textMaxW < 0) textMaxW = 0;
+
+            int textW = 0;
+            if (textMaxW > 0 && e.title[0]) {
+                RECT rcMeasure = { 0, 0, textMaxW, rowTitleH };
+                DrawTextW(hdc, e.title, -1, &rcMeasure,
+                          DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX | DT_CALCRECT);
+                textW = rcMeasure.right - rcMeasure.left;
+                if (textW < 0) textW = 0;
+                if (textW > textMaxW) textW = textMaxW;
+            }
+
+            int blockW = iconSz + ((textW > 0) ? gap : 0) + textW;
+            if (blockW < availableW) {
+                iconX = contentLeft + (availableW - blockW) / 2;
+            }
+
+            textLeft = iconX + iconSz + ((textW > 0) ? gap : 0);
+            textRight = textLeft + textW;
+        }
+
+        // Icon
         if (e.hIcon) DrawIconEx(hdc, iconX, iconY, e.hIcon, iconSz, iconSz, 0, NULL, DI_NORMAL);
 
         // Title text
-        int btnReserve = (i == g_hoverIndex) ? DpiScale(24, g_dpiX) + padLeft : 0;
-        RECT rcText = { iconX + iconSz + padLeft, e.rcCell.top + padTop, e.rcCell.right - padLeft - btnReserve, e.rcCell.top + padTop + rowTitleH };
+        RECT rcText = { textLeft, textTop, textRight, textBottom };
+        if (rcText.right < rcText.left) rcText.right = rcText.left;
         if (g_hTheme) {
             DTTOPTS opts = { sizeof(DTTOPTS) };
             opts.dwFlags = DTT_COMPOSITED | DTT_TEXTCOLOR;
             opts.crText = g_isDarkMode ? SWS_TEXT_DARK : SWS_TEXT_LIGHT;
             DrawThemeTextEx(g_hTheme, hdc, 0, 0, e.title, -1,
-                DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX, &rcText, &opts);
+                DT_SINGLELINE | (HeaderIsVertical() ? DT_CENTER : DT_VCENTER) | DT_END_ELLIPSIS | DT_NOPREFIX, &rcText, &opts);
         } else {
             SetTextColor(hdc, g_isDarkMode ? SWS_TEXT_DARK : SWS_TEXT_LIGHT);
-            DrawTextW(hdc, e.title, -1, &rcText, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
+            DrawTextW(hdc, e.title, -1, &rcText,
+                      DT_SINGLELINE | (HeaderIsVertical() ? DT_CENTER : DT_VCENTER) | DT_END_ELLIPSIS | DT_NOPREFIX);
         }
     }
     SelectObject(hdc, hOldFont);
@@ -955,16 +1315,18 @@ static void CycleLinear(int delta) {
         g_layoutStartIndex = 0;
         RecomputeAndReposition();
 
-        // If still truncated, scroll forward row-by-row until visible
+        // If still truncated, scroll forward line-by-line until visible
+        // (row in horizontal mode, column in vertical mode).
         int n2 = n;
         while (IsWindowTruncated(g_selectedIndex) && n2-- > 0) {
             int firstIdx = g_layoutStartIndex % n;
-            int firstTop = g_windows[firstIdx].rcCell.top;
+            int firstLineCoord = LayoutIsVertical() ? g_windows[firstIdx].rcCell.left : g_windows[firstIdx].rcCell.top;
             int newStart = g_layoutStartIndex;
             for (int k = 0; k < n; k++) {
                 int wi = (g_layoutStartIndex + k) % n;
                 if (IsWindowTruncated(wi)) break;
-                if (g_windows[wi].rcCell.top != firstTop) {
+                int lineCoord = LayoutIsVertical() ? g_windows[wi].rcCell.left : g_windows[wi].rcCell.top;
+                if (lineCoord != firstLineCoord) {
                     newStart = wi;
                     break;
                 }
@@ -986,6 +1348,7 @@ static void CycleLinear(int delta) {
 static void CycleDirectional(int vertDelta) {
     if (g_windows.empty()) return;
     int n = (int)g_windows.size();
+    bool verticalLayout = LayoutIsVertical();
 
     // Build layout-order mapping: layoutOrder[0] is the first window placed visually
     auto buildLayoutOrder = [&](std::vector<int>& order) {
@@ -1003,10 +1366,10 @@ static void CycleDirectional(int vertDelta) {
         if (layoutOrder[idx] == g_selectedIndex) { layoutPos = idx; break; }
     }
 
-    // Save current selection's row and horizontal center
+    // Save current selection's line anchor and perpendicular center.
     RECT rcPrev = g_windows[g_selectedIndex].rcCell;
-    int prevTop = rcPrev.top;
-    int prevCenterX = (rcPrev.left + rcPrev.right) / 2;
+    int prevLineCoord = verticalLayout ? rcPrev.left : rcPrev.top;
+    int prevPerpCenter = verticalLayout ? (rcPrev.top + rcPrev.bottom) / 2 : (rcPrev.left + rcPrev.right) / 2;
 
     // Walk direction in layout order: DOWN = +1 (visually next), UP = -1 (visually prev)
     int layoutDelta = vertDelta;
@@ -1019,22 +1382,23 @@ static void CycleDirectional(int vertDelta) {
 
         if (nextPos == layoutPos) break; // Wrapped all the way around
 
-        // Target window is off-screen — scroll layout to reveal it
+        // Target window is off-screen — scroll layout to reveal it.
         if (IsWindowTruncated(windowIdx)) {
             // First try reset to 0 (handles wrap-to-top / DOWN from last row)
             g_layoutStartIndex = 0;
             RecomputeAndReposition();
 
-            // If still truncated, scroll forward row-by-row
+            // If still truncated, scroll forward line-by-line.
             int attempts = n;
             while (IsWindowTruncated(windowIdx) && attempts-- > 0) {
                 int firstIdx = g_layoutStartIndex % n;
-                int firstTop2 = g_windows[firstIdx].rcCell.top;
+                int firstLineCoord2 = verticalLayout ? g_windows[firstIdx].rcCell.left : g_windows[firstIdx].rcCell.top;
                 int newStart = g_layoutStartIndex;
                 for (int k = 0; k < n; k++) {
                     int wi = (g_layoutStartIndex + k) % n;
                     if (IsWindowTruncated(wi)) break;
-                    if (g_windows[wi].rcCell.top != firstTop2) {
+                    int lineCoord = verticalLayout ? g_windows[wi].rcCell.left : g_windows[wi].rcCell.top;
+                    if (lineCoord != firstLineCoord2) {
                         newStart = wi;
                         break;
                     }
@@ -1054,7 +1418,8 @@ static void CycleDirectional(int vertDelta) {
             break;
         }
 
-        if (g_windows[windowIdx].rcCell.top != prevTop) {
+        int lineCoord = verticalLayout ? g_windows[windowIdx].rcCell.left : g_windows[windowIdx].rcCell.top;
+        if (lineCoord != prevLineCoord) {
             current = windowIdx;
             foundDifferentRow = true;
             break;
@@ -1062,7 +1427,7 @@ static void CycleDirectional(int vertDelta) {
     }
 
     if (!foundDifferentRow) {
-        // Single row — do nothing for Up/Down
+        // Only one line visible; nothing to jump to.
         return;
     }
 
@@ -1072,34 +1437,40 @@ static void CycleDirectional(int vertDelta) {
         if (layoutOrder[idx] == current) { currentLayoutPos = idx; break; }
     }
 
-    // Found a window on a different row. Now find the nearest column match
-    // among all windows on that same row by scanning layout order.
-    int targetTop = g_windows[current].rcCell.top;
+    // Found a window on a different line. Find nearest position match
+    // on that line (x-match for horizontal mode, y-match for vertical mode).
+    int targetLineCoord = verticalLayout ? g_windows[current].rcCell.left : g_windows[current].rcCell.top;
     int bestIndex = current;
     int bestDist = INT_MAX;
 
-    // Scan forward in layout order from current to find all windows on the target row
+    // Scan forward in layout order from current to find all windows on the target line.
     for (int idx = currentLayoutPos; idx < n; idx++) {
         int wi = layoutOrder[idx];
         if (IsWindowTruncated(wi)) break;
-        if (g_windows[wi].rcCell.top != targetTop) break;
+        int lineCoord = verticalLayout ? g_windows[wi].rcCell.left : g_windows[wi].rcCell.top;
+        if (lineCoord != targetLineCoord) break;
 
-        int centerX = (g_windows[wi].rcCell.left + g_windows[wi].rcCell.right) / 2;
-        int dist = abs(prevCenterX - centerX);
+        int perpCenter = verticalLayout ?
+            (g_windows[wi].rcCell.top + g_windows[wi].rcCell.bottom) / 2 :
+            (g_windows[wi].rcCell.left + g_windows[wi].rcCell.right) / 2;
+        int dist = abs(prevPerpCenter - perpCenter);
         if (dist < bestDist) {
             bestDist = dist;
             bestIndex = wi;
         }
     }
 
-    // Scan backward in layout order from current to cover the full row
+    // Scan backward in layout order from current to cover the full line.
     for (int idx = currentLayoutPos - 1; idx >= 0; idx--) {
         int wi = layoutOrder[idx];
         if (IsWindowTruncated(wi)) break;
-        if (g_windows[wi].rcCell.top != targetTop) break;
+        int lineCoord = verticalLayout ? g_windows[wi].rcCell.left : g_windows[wi].rcCell.top;
+        if (lineCoord != targetLineCoord) break;
 
-        int centerX = (g_windows[wi].rcCell.left + g_windows[wi].rcCell.right) / 2;
-        int dist = abs(prevCenterX - centerX);
+        int perpCenter = verticalLayout ?
+            (g_windows[wi].rcCell.top + g_windows[wi].rcCell.bottom) / 2 :
+            (g_windows[wi].rcCell.left + g_windows[wi].rcCell.right) / 2;
+        int dist = abs(prevPerpCenter - perpCenter);
         if (dist < bestDist) {
             bestDist = dist;
             bestIndex = wi;
@@ -1174,10 +1545,17 @@ static LRESULT CALLBACK SwitcherWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPA
     case WM_SYSKEYDOWN: case WM_KEYDOWN:
         if (g_isVisible) {
             if (wParam == VK_TAB) { CycleLinear((GetKeyState(VK_SHIFT) & 0x8000) ? -1 : 1); return 0; }
-            if (wParam == VK_LEFT) { CycleLinear(-1); return 0; }
-            if (wParam == VK_RIGHT) { CycleLinear(1); return 0; }
-            if (wParam == VK_UP) { CycleDirectional(-1); return 0; }
-            if (wParam == VK_DOWN) { CycleDirectional(1); return 0; }
+            if (!LayoutIsVertical()) {
+                if (wParam == VK_LEFT) { CycleLinear(-1); return 0; }
+                if (wParam == VK_RIGHT) { CycleLinear(1); return 0; }
+                if (wParam == VK_UP) { CycleDirectional(-1); return 0; }
+                if (wParam == VK_DOWN) { CycleDirectional(1); return 0; }
+            } else {
+                if (wParam == VK_UP) { CycleLinear(-1); return 0; }
+                if (wParam == VK_DOWN) { CycleLinear(1); return 0; }
+                if (wParam == VK_LEFT) { CycleDirectional(-1); return 0; }
+                if (wParam == VK_RIGHT) { CycleDirectional(1); return 0; }
+            }
             if (wParam == VK_ESCAPE) { HideSwitcher(); return 0; }
             if (wParam == VK_RETURN || wParam == VK_SPACE) { SwitchToSelected(); return 0; }
         }
@@ -1198,10 +1576,11 @@ static LRESULT CALLBACK SwitcherWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPA
             auto& e = g_windows[idx];
             int padL = DpiScale(SWS_PAD_LEFT, g_dpiX);
             int padT = DpiScale(SWS_PAD_TOP, g_dpiY);
-            int titleH = DpiScale(SWS_ROW_TITLE_HEIGHT, g_dpiY);
+            int titleH = GetHeaderRowHeightPx();
             int btnSz = DpiScale(24, g_dpiX);
             int bx = e.rcCell.right - padL - btnSz;
-            int by = e.rcCell.top + padT + (titleH - btnSz) / 2;
+            int by = HeaderIsVertical() ? (e.rcCell.top + padT)
+                                        : (e.rcCell.top + padT + (titleH - btnSz) / 2);
             if (x >= bx && x <= bx + btnSz && y >= by && y <= by + btnSz) {
                 closeHovered = true;
             }
@@ -1300,11 +1679,22 @@ static void LoadSettings() {
     wcscpy_s(g_settings.cornerPreference, v ? v : L"round"); Wh_FreeStringSetting(v);
     v = Wh_GetStringSetting(L"scrollWheelBehavior");
     wcscpy_s(g_settings.scrollWheelBehavior, v ? v : L"never"); Wh_FreeStringSetting(v);
+    v = Wh_GetStringSetting(L"taskListOrientation");
+    wcscpy_s(g_settings.taskListOrientation, v ? v : L"horizontal"); Wh_FreeStringSetting(v);
+    v = Wh_GetStringSetting(L"headerContentMode");
+    wcscpy_s(g_settings.headerContentMode, v ? v : L"horizontal"); Wh_FreeStringSetting(v);
+    if (wcscmp(g_settings.headerContentMode, L"horizontal") != 0 &&
+        wcscmp(g_settings.headerContentMode, L"vertical") != 0 &&
+        wcscmp(g_settings.headerContentMode, L"verticalLarge") != 0) {
+        wcscpy_s(g_settings.headerContentMode, L"horizontal");
+    }
 
     g_settings.opacity = Wh_GetIntSetting(L"opacity");
     if (g_settings.opacity <= 0 || g_settings.opacity > 100) g_settings.opacity = 90;
     g_settings.rowHeight = Wh_GetIntSetting(L"rowHeight");
     if (g_settings.rowHeight <= 0) g_settings.rowHeight = 230;
+    g_settings.rowWidth = Wh_GetIntSetting(L"rowWidth");
+    if (g_settings.rowWidth < 0) g_settings.rowWidth = 0;
     g_settings.showThumbnails = Wh_GetIntSetting(L"showThumbnails");
     g_settings.maxWidthPercent = Wh_GetIntSetting(L"maxWidthPercent");
     if (g_settings.maxWidthPercent <= 0 || g_settings.maxWidthPercent > 100) g_settings.maxWidthPercent = 80;
@@ -1317,6 +1707,14 @@ static void LoadSettings() {
     g_settings.useAccentColor = Wh_GetIntSetting(L"useAccentColor");
     g_settings.primaryMonitorOnly = Wh_GetIntSetting(L"primaryMonitorOnly");
     g_settings.perMonitorWindows = Wh_GetIntSetting(L"perMonitorWindows");
+    g_settings.centerTaskContent = Wh_GetIntSetting(L"centerTaskContent");
+
+    v = Wh_GetStringSetting(L"borderColor");
+    wcscpy_s(g_settings.borderColor, v ? v : L"#FFFFFF"); Wh_FreeStringSetting(v);
+    if (!ParseHexColor(g_settings.borderColor, nullptr)) {
+        wcscpy_s(g_settings.borderColor, L"#FFFFFF");
+    }
+
 }
 
 
