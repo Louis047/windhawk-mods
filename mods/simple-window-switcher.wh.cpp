@@ -49,17 +49,21 @@ Additional improvements made by [Asteski](https://github.com/Asteski).
   - light: Light
   - dark: Dark
 - cornerPreference: none
-  $name: Corner Preference
-  $options:
-  - none: Do not round
-  - round: Round
-  - roundSmall: Round small
+    $name: Corner Preference
+    $description: Corner radius for the switcher window only
+    $options:
+    - none: Do not round
+    - round: Round
+    - roundSmall: Round small
+- taskRoundedCorners: false
+    $name: Round Task Borders and Close Button
+    $description: Apply small rounded corners to the selected task border and close button
 - taskListOrientation: horizontal
-  $name: Task List Orientation
-  $description: Arrange tasks left-to-right or top-to-bottom
-  $options:
-  - horizontal: Horizontal
-  - vertical: Vertical
+    $name: Task List Orientation
+    $description: Arrange tasks left-to-right or top-to-bottom
+    $options:
+    - horizontal: Horizontal
+    - vertical: Vertical
 - headerContentMode: horizontal
   $name: Header Content Mode
   $description: Layout of the task header icon and title.
@@ -167,7 +171,7 @@ struct Settings {
     WCHAR borderColor[16];
     int opacity; int rowHeight; int rowWidth;
     int maxWidthPercent; int maxHeightPercent; int windowPadding; int showDelay;
-    bool showThumbnails; bool useAccentColor; bool primaryMonitorOnly; bool perMonitorWindows;
+    bool showThumbnails; bool useAccentColor; bool primaryMonitorOnly; bool perMonitorWindows; bool taskRoundedCorners;
     bool centerTaskContent;
 };
 
@@ -226,21 +230,19 @@ static INT GetCornerPref() {
     return 2; // Default to round
 }
 
-static int GetUiCornerRadiusPx() {
-    if (wcscmp(g_settings.cornerPreference, L"none") == 0) {
-        return 0;
-    }
-    if (wcscmp(g_settings.cornerPreference, L"roundSmall") == 0) {
-        return MulDiv(4, g_dpiX, 96);
-    }
-    return MulDiv(8, g_dpiX, 96);
+static bool UseTaskRoundedCorners() {
+    return g_settings.taskRoundedCorners;
 }
 
-static int GetCloseButtonCornerRadiusPx() {
-    if (wcscmp(g_settings.cornerPreference, L"none") == 0) {
+static int GetTaskUiCornerRadiusPx() {
+    if (!UseTaskRoundedCorners()) {
         return 0;
     }
     return MulDiv(4, g_dpiX, 96);
+}
+
+static int GetCloseButtonCornerRadiusPx() {
+    return GetTaskUiCornerRadiusPx();
 }
 static bool ShouldUseDarkMode() {
     if (wcscmp(g_settings.colorScheme, L"light") == 0) return false;
@@ -939,7 +941,7 @@ static void DrawContour(HDC hdc, RECT rc, int contourSize, int direction) {
 
     int t = direction * (contourSize * g_dpiX / 96);
 
-    int cornerRadius = GetUiCornerRadiusPx();
+    int cornerRadius = GetTaskUiCornerRadiusPx();
     if (cornerRadius > 0 && direction > 0) {
         int penWidth = contourSize * g_dpiX / 96;
         if (penWidth < 1) penWidth = 1;
@@ -1012,7 +1014,7 @@ static void DrawSwitcherContent(HDC hdc, bool fillBg) {
     int padTop     = DpiScale(SWS_PAD_TOP, g_dpiY);
     int rowTitleH  = GetHeaderRowHeightPx();
     int iconSz     = GetHeaderIconSizePx();
-    int cornerRadius = GetUiCornerRadiusPx();
+    int cornerRadius = GetTaskUiCornerRadiusPx();
 
     for (int i = 0; i < (int)g_windows.size(); i++) {
         auto& e = g_windows[i];
@@ -1677,6 +1679,7 @@ static void LoadSettings() {
     wcscpy_s(g_settings.colorScheme, v ? v : L"system"); Wh_FreeStringSetting(v);
     v = Wh_GetStringSetting(L"cornerPreference");
     wcscpy_s(g_settings.cornerPreference, v ? v : L"round"); Wh_FreeStringSetting(v);
+    g_settings.taskRoundedCorners = Wh_GetIntSetting(L"taskRoundedCorners");
     v = Wh_GetStringSetting(L"scrollWheelBehavior");
     wcscpy_s(g_settings.scrollWheelBehavior, v ? v : L"never"); Wh_FreeStringSetting(v);
     v = Wh_GetStringSetting(L"taskListOrientation");
