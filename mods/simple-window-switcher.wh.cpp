@@ -19,7 +19,7 @@ Additional improvements made by [Asteski](https://github.com/Asteski).
 
 ## Features
 - Grid layout with live DWM thumbnail previews
-- Different Task List and Heard Content layout modes (horizontal/vertical, icon+title arrangement)
+- Different Task List and Header Content layouts
 - Keyboard navigation (Tab/Shift+Tab, Arrow keys, Enter, Esc)
 - Mouse click to select, scroll wheel to cycle
 - Alt+Ctrl+Tab sticky mode
