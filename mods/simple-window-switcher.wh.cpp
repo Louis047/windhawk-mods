@@ -49,21 +49,21 @@ Additional improvements made by [Asteski](https://github.com/Asteski).
   - light: Light
   - dark: Dark
 - cornerPreference: none
-    $name: Corner Preference
-    $description: Corner radius for the switcher window only
-    $options:
-    - none: Do not round
-    - round: Round
-    - roundSmall: Round small
+  $name: Corner Preference
+  $description: Corner radius for the switcher window only
+  $options:
+  - none: Do not round
+  - round: Round
+  - roundSmall: Round small
 - taskRoundedCorners: false
-    $name: Round Task Borders and Close Button
-    $description: Apply small rounded corners to the selected task border and close button
+  $name: Round Task Borders and Close Button
+  $description: Apply small rounded corners to the selected task border and close button
 - taskListOrientation: horizontal
-    $name: Task List Orientation
-    $description: Arrange tasks left-to-right or top-to-bottom
-    $options:
-    - horizontal: Horizontal
-    - vertical: Vertical
+  $name: Task List Orientation
+  $description: Arrange tasks left-to-right or top-to-bottom
+  $options:
+  - horizontal: Horizontal
+  - vertical: Vertical
 - headerContentMode: horizontal
   $name: Header Content Mode
   $description: Layout of the task header icon and title.
@@ -109,6 +109,9 @@ Additional improvements made by [Asteski](https://github.com/Asteski).
   $name: Always Display Switcher on Primary Monitor
 - perMonitorWindows: false
   $name: Display Windows Only From the Monitor Containing the Cursor
+- enableAltShiftForBackward: false
+  $name: Enable Alt+Shift for Backward Tab
+  $description: When enabled, press Alt+Shift (without Tab) to move backward. Tab always moves forward.
 */
 // ==/WindhawkModSettings==
 
@@ -119,6 +122,7 @@ Additional improvements made by [Asteski](https://github.com/Asteski).
 #include <shellapi.h>
 #include <shlobj.h>
 #include <shlwapi.h>
+#include <propkey.h>
 #include <windowsx.h>
 #include <commctrl.h>
 #include <vector>
@@ -155,6 +159,7 @@ Additional improvements made by [Asteski](https://github.com/Asteski).
 
 typedef BOOL (WINAPI *IsShellWindow_t)(HWND);
 typedef HWND (WINAPI *GhostWindowFromHungWindow_t)(HWND);
+typedef HRESULT (WINAPI *SHGetPropertyStoreForWindow_t)(HWND, REFIID, void**);
 struct ACCENT_POLICY { DWORD AccentState; DWORD AccentFlags; DWORD GradientColor; DWORD AnimationId; };
 struct WINDOWCOMPOSITIONATTRIBDATA { DWORD dwAttrib; PVOID pvData; SIZE_T cbData; };
 typedef BOOL(WINAPI *SetWindowCompositionAttribute_t)(HWND, WINDOWCOMPOSITIONATTRIBDATA*);
@@ -172,7 +177,7 @@ struct Settings {
     int opacity; int rowHeight; int rowWidth;
     int maxWidthPercent; int maxHeightPercent; int windowPadding; int showDelay;
     bool showThumbnails; bool useAccentColor; bool primaryMonitorOnly; bool perMonitorWindows; bool taskRoundedCorners;
-    bool centerTaskContent;
+    bool centerTaskContent; bool enableAltShiftForBackward;
 };
 
 static HWND g_hSwitcher = NULL;
@@ -195,8 +200,13 @@ static IsShellWindow_t g_IsShellFrameWindow = nullptr;
 static GhostWindowFromHungWindow_t g_GhostWindowFromHungWindow = nullptr;
 static GhostWindowFromHungWindow_t g_HungWindowFromGhostWindow = nullptr;
 static SetWindowCompositionAttribute_t g_SetWindowCompositionAttribute = nullptr;
+static SHGetPropertyStoreForWindow_t g_SHGetPropertyStoreForWindow = nullptr;
 static ULONG_PTR g_gdiplusToken = 0;
 static bool g_isCloseHovered = false;
+static const PROPERTYKEY kPkeyAppUserModelId = {
+    {0x9F4C2855, 0x9F79, 0x4B39, {0xA8, 0xD0, 0xE1, 0xD4, 0x2D, 0xE1, 0xD5, 0xF3}},
+    5
+};
 
 // Helpers
 
@@ -294,6 +304,16 @@ static bool ResolveAPIs() {
     g_GhostWindowFromHungWindow = (GhostWindowFromHungWindow_t)GetProcAddress(h, "GhostWindowFromHungWindow");
     g_HungWindowFromGhostWindow = (GhostWindowFromHungWindow_t)GetProcAddress(h, "HungWindowFromGhostWindow");
     g_SetWindowCompositionAttribute = (SetWindowCompositionAttribute_t)GetProcAddress(h, "SetWindowCompositionAttribute");
+
+    HMODULE hShell32 = GetModuleHandleW(L"shell32.dll");
+    if (!hShell32) {
+        hShell32 = LoadLibraryW(L"shell32.dll");
+    }
+    if (hShell32) {
+        g_SHGetPropertyStoreForWindow =
+            (SHGetPropertyStoreForWindow_t)GetProcAddress(hShell32, "SHGetPropertyStoreForWindow");
+    }
+
     return true;
 }
 
@@ -427,6 +447,8 @@ static bool IsAltTabWindow(HWND h) {
 
 // Window Enumeration
 
+static HICON TryGetAppIconFromAumid(HWND hWnd);
+
 static BOOL CALLBACK EnumWindowsProc(HWND hWnd, LPARAM lParam) {
     auto* list = reinterpret_cast<std::vector<WindowEntry>*>(lParam);
     if (hWnd == g_hSwitcher) return TRUE;
@@ -445,12 +467,63 @@ static BOOL CALLBACK EnumWindowsProc(HWND hWnd, LPARAM lParam) {
     SendMessageTimeoutW(hWnd, WM_GETICON, ICON_BIG, 0, SMTO_ABORTIFHUNG | SMTO_BLOCK, 100, (DWORD_PTR*)&e.hIcon);
     if (!e.hIcon) SendMessageTimeoutW(hWnd, WM_GETICON, ICON_SMALL2, 0, SMTO_ABORTIFHUNG | SMTO_BLOCK, 100, (DWORD_PTR*)&e.hIcon);
     if (!e.hIcon) SendMessageTimeoutW(hWnd, WM_GETICON, ICON_SMALL, 0, SMTO_ABORTIFHUNG | SMTO_BLOCK, 100, (DWORD_PTR*)&e.hIcon);
+    if (!e.hIcon) e.hIcon = TryGetAppIconFromAumid(hWnd);
     if (!e.hIcon) e.hIcon = (HICON)GetClassLongPtrW(hWnd, GCLP_HICON);
     if (!e.hIcon) e.hIcon = (HICON)GetClassLongPtrW(hWnd, GCLP_HICONSM);
     if (!e.hIcon) e.hIcon = LoadIconW(NULL, IDI_APPLICATION);
     list->push_back(e);
     return TRUE;
 }
+
+static HICON TryGetAppIconFromAumid(HWND hWnd) {
+    if (!g_SHGetPropertyStoreForWindow) {
+        return NULL;
+    }
+
+    bool shouldCoUninit = false;
+    HRESULT coInitHr = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
+    if (SUCCEEDED(coInitHr)) {
+        shouldCoUninit = true;
+    } else if (coInitHr != RPC_E_CHANGED_MODE) {
+        return NULL;
+    }
+
+    HICON hIcon = NULL;
+    IPropertyStore* propertyStore = NULL;
+    if (SUCCEEDED(g_SHGetPropertyStoreForWindow(hWnd, IID_PPV_ARGS(&propertyStore))) && propertyStore) {
+        PROPVARIANT appIdProp;
+        PropVariantInit(&appIdProp);
+
+        if (SUCCEEDED(propertyStore->GetValue(kPkeyAppUserModelId, &appIdProp)) &&
+            appIdProp.vt == VT_LPWSTR && appIdProp.pwszVal && appIdProp.pwszVal[0]) {
+            WCHAR appsFolderPath[768];
+            if (swprintf_s(appsFolderPath, L"shell:AppsFolder\\%s", appIdProp.pwszVal) > 0) {
+                PIDLIST_ABSOLUTE pidl = NULL;
+                if (SUCCEEDED(SHParseDisplayName(appsFolderPath, NULL, &pidl, 0, NULL)) && pidl) {
+                    SHFILEINFOW sfi = {};
+                    if (SHGetFileInfoW((LPCWSTR)pidl,
+                                       0,
+                                       &sfi,
+                                       sizeof(sfi),
+                                       SHGFI_PIDL | SHGFI_ICON | SHGFI_SMALLICON)) {
+                        hIcon = sfi.hIcon;
+                    }
+                    CoTaskMemFree(pidl);
+                }
+            }
+        }
+
+        PropVariantClear(&appIdProp);
+        propertyStore->Release();
+    }
+
+    if (shouldCoUninit) {
+        CoUninitialize();
+    }
+
+    return hIcon;
+}
+
 static void BuildWindowList() {
     for (auto& w : g_windows) if (w.hThumb) { DwmUnregisterThumbnail(w.hThumb); w.hThumb = NULL; }
     g_windows.clear();
@@ -1546,7 +1619,22 @@ static LRESULT CALLBACK SwitcherWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPA
         break;
     case WM_SYSKEYDOWN: case WM_KEYDOWN:
         if (g_isVisible) {
-            if (wParam == VK_TAB) { CycleLinear((GetKeyState(VK_SHIFT) & 0x8000) ? -1 : 1); return 0; }
+            if (g_settings.enableAltShiftForBackward &&
+                (wParam == VK_SHIFT || wParam == VK_LSHIFT || wParam == VK_RSHIFT)) {
+                bool isRepeat = (lParam & 0x40000000) != 0;
+                bool altDown = (GetKeyState(VK_MENU) & 0x8000) != 0;
+                if (!isRepeat && altDown) {
+                    CycleLinear(-1);
+                    return 0;
+                }
+            }
+
+            if (wParam == VK_TAB) {
+                bool shiftDown = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+                bool backward = !g_settings.enableAltShiftForBackward && shiftDown;
+                CycleLinear(backward ? -1 : 1);
+                return 0;
+            }
             if (!LayoutIsVertical()) {
                 if (wParam == VK_LEFT) { CycleLinear(-1); return 0; }
                 if (wParam == VK_RIGHT) { CycleLinear(1); return 0; }
@@ -1711,6 +1799,7 @@ static void LoadSettings() {
     g_settings.primaryMonitorOnly = Wh_GetIntSetting(L"primaryMonitorOnly");
     g_settings.perMonitorWindows = Wh_GetIntSetting(L"perMonitorWindows");
     g_settings.centerTaskContent = Wh_GetIntSetting(L"centerTaskContent");
+    g_settings.enableAltShiftForBackward = Wh_GetIntSetting(L"enableAltShiftForBackward");
 
     v = Wh_GetStringSetting(L"borderColor");
     wcscpy_s(g_settings.borderColor, v ? v : L"#FFFFFF"); Wh_FreeStringSetting(v);
