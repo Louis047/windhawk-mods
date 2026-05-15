@@ -71,6 +71,7 @@ Additional improvements made by [Asteski](https://github.com/Asteski).
   - horizontal: Horizontal
   - vertical: Vertical
   - verticalLarge: Vertical with large icons
+  - horizontalLarge: Horizontal with large icons
 - rowHeight: 230
   $name: Row Height
   $description: Total height of each thumbnail row in pixels (before DPI scaling). Default 230 matches ExplorerPatcher.
@@ -217,8 +218,11 @@ static bool HeaderModeIs(const WCHAR* v) { return wcscmp(g_settings.headerConten
 static bool HeaderIsVertical() {
     return HeaderModeIs(L"vertical") || HeaderModeIs(L"verticalLarge");
 }
+static bool HeaderIsHorizontalLarge() {
+    return HeaderModeIs(L"horizontalLarge");
+}
 static int GetHeaderIconSizePx() {
-    if (HeaderModeIs(L"verticalLarge")) {
+    if (HeaderModeIs(L"verticalLarge") || HeaderModeIs(L"horizontalLarge")) {
         return MulDiv(32, g_dpiX, 96);
     }
     return MulDiv(SWS_ICON_SIZE, g_dpiX, 96);
@@ -479,7 +483,7 @@ static BOOL CALLBACK EnumWindowsProc(HWND hWnd, LPARAM lParam) {
     SendMessageTimeoutW(hWnd, WM_GETICON, ICON_BIG, 0, SMTO_ABORTIFHUNG | SMTO_BLOCK, 100, (DWORD_PTR*)&e.hIcon);
     if (!e.hIcon) SendMessageTimeoutW(hWnd, WM_GETICON, ICON_SMALL2, 0, SMTO_ABORTIFHUNG | SMTO_BLOCK, 100, (DWORD_PTR*)&e.hIcon);
     if (!e.hIcon) SendMessageTimeoutW(hWnd, WM_GETICON, ICON_SMALL, 0, SMTO_ABORTIFHUNG | SMTO_BLOCK, 100, (DWORD_PTR*)&e.hIcon);
-    if (!e.hIcon) e.hIcon = TryGetAppIconFromAumid(hWnd, HeaderModeIs(L"verticalLarge"));
+    if (!e.hIcon) e.hIcon = TryGetAppIconFromAumid(hWnd, HeaderModeIs(L"verticalLarge") || HeaderModeIs(L"horizontalLarge"));
     if (!e.hIcon) e.hIcon = (HICON)GetClassLongPtrW(hWnd, GCLP_HICON);
     if (!e.hIcon) e.hIcon = (HICON)GetClassLongPtrW(hWnd, GCLP_HICONSM);
     if (!e.hIcon) e.hIcon = LoadIconW(NULL, IDI_APPLICATION);
@@ -1816,7 +1820,8 @@ static void LoadSettings() {
     wcscpy_s(g_settings.headerContentMode, v ? v : L"horizontal"); Wh_FreeStringSetting(v);
     if (wcscmp(g_settings.headerContentMode, L"horizontal") != 0 &&
         wcscmp(g_settings.headerContentMode, L"vertical") != 0 &&
-        wcscmp(g_settings.headerContentMode, L"verticalLarge") != 0) {
+        wcscmp(g_settings.headerContentMode, L"verticalLarge") != 0 &&
+        wcscmp(g_settings.headerContentMode, L"horizontalLarge") != 0) {
         wcscpy_s(g_settings.headerContentMode, L"horizontal");
     }
 
