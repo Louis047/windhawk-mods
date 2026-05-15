@@ -370,6 +370,42 @@ static bool CheckStoredPIDMatchesCurrent() {
 constexpr WCHAR kRestartTitle[] = L"Simple Window Switcher - Windhawk";
 constexpr WCHAR kRestartText[] = L"Explorer needs to be restarted for changes to take effect. Restart now?";
 
+static HRESULT CALLBACK RestartPromptDialogCallback(HWND hwnd, UINT msg, WPARAM, LPARAM, LONG_PTR) {
+    if (msg == TDN_CREATED) {
+        g_restartExplorerPromptWindow = hwnd;
+        SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
+    } else if (msg == TDN_DESTROYED) {
+        g_restartExplorerPromptWindow = nullptr;
+    }
+    return S_OK;
+}
+
+static DWORD WINAPI RestartPromptThreadProc(LPVOID param) {
+    bool shouldSetFlag = (bool)(uintptr_t)param;
+    TASKDIALOGCONFIG tdc = {};
+    tdc.cbSize = sizeof(tdc);
+    tdc.dwFlags = TDF_ALLOW_DIALOG_CANCELLATION;
+    tdc.dwCommonButtons = TDCBF_YES_BUTTON | TDCBF_NO_BUTTON;
+    tdc.pszWindowTitle = kRestartTitle;
+    tdc.pszMainIcon = TD_INFORMATION_ICON;
+    tdc.pszContent = kRestartText;
+    tdc.pfCallback = RestartPromptDialogCallback;
+
+    int button;
+    if (SUCCEEDED(TaskDialogIndirect(&tdc, &button, nullptr, nullptr)) && button == IDYES) {
+        if (shouldSetFlag) SetRegFlag(SWS_REG_RESTART_FLAG);
+        ClearRegFlag(SWS_REG_LAST_PID);
+        WCHAR cmd[] = L"cmd.exe /c \"taskkill /F /IM explorer.exe & start explorer\"";
+        STARTUPINFO si = {}; si.cb = sizeof(si);
+        PROCESS_INFORMATION pi = {};
+        if (CreateProcess(nullptr, cmd, nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &pi)) {
+            CloseHandle(pi.hThread); CloseHandle(pi.hProcess);
+        }
+    }
+
+    return 0;
+}
+
 // setFlagOnRestart: if true, sets a registry flag before restarting so the
 // next Wh_ModInit knows to skip the prompt (breaks the init loop).
 // Init calls with true, uninit calls with false.
@@ -378,38 +414,14 @@ static void PromptForExplorerRestart(bool setFlagOnRestart) {
         if (WaitForSingleObject(g_restartExplorerPromptThread, 0) != WAIT_OBJECT_0) return;
         CloseHandle(g_restartExplorerPromptThread);
     }
-    g_restartExplorerPromptThread = CreateThread(nullptr, 0,
-        [](LPVOID param) WINAPI -> DWORD {
-            bool shouldSetFlag = (bool)(uintptr_t)param;
-            TASKDIALOGCONFIG tdc = {};
-            tdc.cbSize = sizeof(tdc);
-            tdc.dwFlags = TDF_ALLOW_DIALOG_CANCELLATION;
-            tdc.dwCommonButtons = TDCBF_YES_BUTTON | TDCBF_NO_BUTTON;
-            tdc.pszWindowTitle = kRestartTitle;
-            tdc.pszMainIcon = TD_INFORMATION_ICON;
-            tdc.pszContent = kRestartText;
-            tdc.pfCallback = [](HWND hwnd, UINT msg, WPARAM, LPARAM, LONG_PTR) WINAPI -> HRESULT {
-                if (msg == TDN_CREATED) {
-                    g_restartExplorerPromptWindow = hwnd;
-                    SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
-                } else if (msg == TDN_DESTROYED) {
-                    g_restartExplorerPromptWindow = nullptr;
-                }
-                return S_OK;
-            };
-            int button;
-            if (SUCCEEDED(TaskDialogIndirect(&tdc, &button, nullptr, nullptr)) && button == IDYES) {
-                if (shouldSetFlag) SetRegFlag(SWS_REG_RESTART_FLAG);
-                ClearRegFlag(SWS_REG_LAST_PID);
-                WCHAR cmd[] = L"cmd.exe /c \"taskkill /F /IM explorer.exe & start explorer\"";
-                STARTUPINFO si = {}; si.cb = sizeof(si);
-                PROCESS_INFORMATION pi = {};
-                if (CreateProcess(nullptr, cmd, nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &pi)) {
-                    CloseHandle(pi.hThread); CloseHandle(pi.hProcess);
-                }
-            }
-            return 0;
-        }, (LPVOID)(uintptr_t)setFlagOnRestart, 0, nullptr);
+    g_restartExplorerPromptThread = CreateThread(
+        nullptr,
+        0,
+        RestartPromptThreadProc,
+        (LPVOID)(uintptr_t)setFlagOnRestart,
+        0,
+        nullptr
+    );
 }
 
 
@@ -447,7 +459,7 @@ static bool IsAltTabWindow(HWND h) {
 
 // Window Enumeration
 
-static HICON TryGetAppIconFromAumid(HWND hWnd);
+static HICON TryGetAppIconFromAumid(HWND hWnd, bool largeIcon);
 
 static BOOL CALLBACK EnumWindowsProc(HWND hWnd, LPARAM lParam) {
     auto* list = reinterpret_cast<std::vector<WindowEntry>*>(lParam);
@@ -467,7 +479,7 @@ static BOOL CALLBACK EnumWindowsProc(HWND hWnd, LPARAM lParam) {
     SendMessageTimeoutW(hWnd, WM_GETICON, ICON_BIG, 0, SMTO_ABORTIFHUNG | SMTO_BLOCK, 100, (DWORD_PTR*)&e.hIcon);
     if (!e.hIcon) SendMessageTimeoutW(hWnd, WM_GETICON, ICON_SMALL2, 0, SMTO_ABORTIFHUNG | SMTO_BLOCK, 100, (DWORD_PTR*)&e.hIcon);
     if (!e.hIcon) SendMessageTimeoutW(hWnd, WM_GETICON, ICON_SMALL, 0, SMTO_ABORTIFHUNG | SMTO_BLOCK, 100, (DWORD_PTR*)&e.hIcon);
-    if (!e.hIcon) e.hIcon = TryGetAppIconFromAumid(hWnd);
+    if (!e.hIcon) e.hIcon = TryGetAppIconFromAumid(hWnd, HeaderModeIs(L"verticalLarge"));
     if (!e.hIcon) e.hIcon = (HICON)GetClassLongPtrW(hWnd, GCLP_HICON);
     if (!e.hIcon) e.hIcon = (HICON)GetClassLongPtrW(hWnd, GCLP_HICONSM);
     if (!e.hIcon) e.hIcon = LoadIconW(NULL, IDI_APPLICATION);
@@ -475,7 +487,7 @@ static BOOL CALLBACK EnumWindowsProc(HWND hWnd, LPARAM lParam) {
     return TRUE;
 }
 
-static HICON TryGetAppIconFromAumid(HWND hWnd) {
+static HICON TryGetAppIconFromAumid(HWND hWnd, bool largeIcon) {
     if (!g_SHGetPropertyStoreForWindow) {
         return NULL;
     }
@@ -505,7 +517,7 @@ static HICON TryGetAppIconFromAumid(HWND hWnd) {
                                        0,
                                        &sfi,
                                        sizeof(sfi),
-                                       SHGFI_PIDL | SHGFI_ICON | SHGFI_SMALLICON)) {
+                                       SHGFI_PIDL | SHGFI_ICON | (largeIcon ? SHGFI_LARGEICON : SHGFI_SMALLICON))) {
                         hIcon = sfi.hIcon;
                     }
                     CoTaskMemFree(pidl);
@@ -1578,6 +1590,10 @@ static int HitTestThumb(int x, int y) {
 static LRESULT CALLBACK SwitcherWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
     if (uMsg == WM_HOTKEY) {
         int id = (int)wParam;
+        // If Alt+Shift+Tab is disabled by setting, ignore its hotkey
+        if (g_settings.enableAltShiftForBackward && id == SWS_HOTKEY_ALTSHIFTTAB) {
+            return 0;
+        }
         bool isShift = (id == SWS_HOTKEY_ALTSHIFTTAB || id == SWS_HOTKEY_ALTSHIFTCTRLTAB);
         bool isCtrl = (id == SWS_HOTKEY_ALTCTRLTAB || id == SWS_HOTKEY_ALTSHIFTCTRLTAB);
         if (!g_isVisible) {
@@ -1610,15 +1626,38 @@ static LRESULT CALLBACK SwitcherWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPA
 
     switch (uMsg) {
     case WM_KEYUP:
+        if (g_isVisible && g_settings.enableAltShiftForBackward && wParam == VK_TAB) {
+            bool altDown = (GetKeyState(VK_MENU) & 0x8000) != 0;
+            bool shiftDown = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+            if (altDown && shiftDown) {
+                return 0;
+            }
+        }
         if (wParam == VK_MENU && g_isVisible && !g_isSticky) { SwitchToSelected(); return 0; }
         if (wParam == VK_ESCAPE && g_isVisible) { HideSwitcher(); return 0; }
         if (wParam == VK_RETURN && g_isVisible) { SwitchToSelected(); return 0; }
         break;
     case WM_SYSKEYUP:
+        if (g_isVisible && g_settings.enableAltShiftForBackward && wParam == VK_TAB) {
+            bool altDown = (GetKeyState(VK_MENU) & 0x8000) != 0;
+            bool shiftDown = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+            if (altDown && shiftDown) {
+                return 0;
+            }
+        }
         if (wParam == VK_MENU && g_isVisible && !g_isSticky) { SwitchToSelected(); return 0; }
         break;
     case WM_SYSKEYDOWN: case WM_KEYDOWN:
         if (g_isVisible) {
+            // Block Alt+Shift+Tab from reaching the system if setting is enabled
+            if (g_settings.enableAltShiftForBackward && wParam == VK_TAB) {
+                bool altDown = (GetKeyState(VK_MENU) & 0x8000) != 0;
+                bool shiftDown = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+                if (altDown && shiftDown) {
+                    // Suppress native switcher
+                    return 0;
+                }
+            }
             if (g_settings.enableAltShiftForBackward &&
                 (wParam == VK_SHIFT || wParam == VK_LSHIFT || wParam == VK_RSHIFT)) {
                 bool isRepeat = (lParam & 0x40000000) != 0;
@@ -1650,6 +1689,7 @@ static LRESULT CALLBACK SwitcherWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPA
             if (wParam == VK_RETURN || wParam == VK_SPACE) { SwitchToSelected(); return 0; }
         }
         break;
+    // (Removed duplicate combined case for WM_SYSKEYUP and WM_KEYUP)
     case WM_MOUSEWHEEL:
         if (g_isVisible) {
             bool ok = ScrollIs(L"always") || (ScrollIs(L"stickyOnly") && g_isSticky);
