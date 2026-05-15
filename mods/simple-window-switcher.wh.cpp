@@ -64,14 +64,18 @@ Additional improvements made by [Asteski](https://github.com/Asteski).
   $options:
   - horizontal: Horizontal
   - vertical: Vertical
-- headerContentMode: horizontal
-  $name: Header Content Mode
-  $description: Layout of the task header icon and title.
+- headerContentOrientation: horizontal
+  $name: Header Content Orientation
+  $description: Orientation of the task header icon and title.
   $options:
   - horizontal: Horizontal
   - vertical: Vertical
-  - verticalLarge: Vertical with large icons
-  - horizontalLarge: Horizontal with large icons
+- iconSize: small
+  $name: Icon Size
+  $description: Size of the header icon.
+  $options:
+  - small: Small
+  - large: Large
 - rowHeight: 230
   $name: Row Height
   $description: Total height of each thumbnail row in pixels (before DPI scaling). Default 230 matches ExplorerPatcher.
@@ -173,7 +177,7 @@ struct WindowEntry {
     SIZE effectiveSourceSize;  // Source size after cropping invisible frame
 };
 struct Settings {
-    WCHAR theme[32]; WCHAR colorScheme[32]; WCHAR cornerPreference[32]; WCHAR scrollWheelBehavior[32]; WCHAR taskListOrientation[32]; WCHAR headerContentMode[32];
+    WCHAR theme[32]; WCHAR colorScheme[32]; WCHAR cornerPreference[32]; WCHAR scrollWheelBehavior[32]; WCHAR taskListOrientation[32]; WCHAR headerContentOrientation[32]; WCHAR iconSize[32];
     WCHAR borderColor[16];
     int opacity; int rowHeight; int rowWidth;
     int maxWidthPercent; int maxHeightPercent; int windowPadding; int showDelay;
@@ -214,15 +218,13 @@ static const PROPERTYKEY kPkeyAppUserModelId = {
 static bool ThemeIs(const WCHAR* v) { return wcscmp(g_settings.theme, v) == 0; }
 static bool ScrollIs(const WCHAR* v) { return wcscmp(g_settings.scrollWheelBehavior, v) == 0; }
 static bool LayoutIsVertical() { return wcscmp(g_settings.taskListOrientation, L"vertical") == 0; }
-static bool HeaderModeIs(const WCHAR* v) { return wcscmp(g_settings.headerContentMode, v) == 0; }
+static bool HeaderOrientationIs(const WCHAR* v) { return wcscmp(g_settings.headerContentOrientation, v) == 0; }
+static bool IconSizeIs(const WCHAR* v) { return wcscmp(g_settings.iconSize, v) == 0; }
 static bool HeaderIsVertical() {
-    return HeaderModeIs(L"vertical") || HeaderModeIs(L"verticalLarge");
-}
-static bool HeaderIsHorizontalLarge() {
-    return HeaderModeIs(L"horizontalLarge");
+    return HeaderOrientationIs(L"vertical");
 }
 static int GetHeaderIconSizePx() {
-    if (HeaderModeIs(L"verticalLarge") || HeaderModeIs(L"horizontalLarge")) {
+    if (IconSizeIs(L"large")) {
         return MulDiv(32, g_dpiX, 96);
     }
     return MulDiv(SWS_ICON_SIZE, g_dpiX, 96);
@@ -463,7 +465,7 @@ static bool IsAltTabWindow(HWND h) {
 
 // Window Enumeration
 
-static HICON TryGetAppIconFromAumid(HWND hWnd, bool largeIcon);
+static HICON TryGetAppIconFromAumid(HWND hWnd, int desiredSizePx);
 
 static BOOL CALLBACK EnumWindowsProc(HWND hWnd, LPARAM lParam) {
     auto* list = reinterpret_cast<std::vector<WindowEntry>*>(lParam);
@@ -483,7 +485,7 @@ static BOOL CALLBACK EnumWindowsProc(HWND hWnd, LPARAM lParam) {
     SendMessageTimeoutW(hWnd, WM_GETICON, ICON_BIG, 0, SMTO_ABORTIFHUNG | SMTO_BLOCK, 100, (DWORD_PTR*)&e.hIcon);
     if (!e.hIcon) SendMessageTimeoutW(hWnd, WM_GETICON, ICON_SMALL2, 0, SMTO_ABORTIFHUNG | SMTO_BLOCK, 100, (DWORD_PTR*)&e.hIcon);
     if (!e.hIcon) SendMessageTimeoutW(hWnd, WM_GETICON, ICON_SMALL, 0, SMTO_ABORTIFHUNG | SMTO_BLOCK, 100, (DWORD_PTR*)&e.hIcon);
-    if (!e.hIcon) e.hIcon = TryGetAppIconFromAumid(hWnd, HeaderModeIs(L"verticalLarge") || HeaderModeIs(L"horizontalLarge"));
+    if (!e.hIcon) e.hIcon = TryGetAppIconFromAumid(hWnd, GetHeaderIconSizePx());
     if (!e.hIcon) e.hIcon = (HICON)GetClassLongPtrW(hWnd, GCLP_HICON);
     if (!e.hIcon) e.hIcon = (HICON)GetClassLongPtrW(hWnd, GCLP_HICONSM);
     if (!e.hIcon) e.hIcon = LoadIconW(NULL, IDI_APPLICATION);
@@ -491,7 +493,7 @@ static BOOL CALLBACK EnumWindowsProc(HWND hWnd, LPARAM lParam) {
     return TRUE;
 }
 
-static HICON TryGetAppIconFromAumid(HWND hWnd, bool largeIcon) {
+static HICON TryGetAppIconFromAumid(HWND hWnd, int desiredSizePx) {
     if (!g_SHGetPropertyStoreForWindow) {
         return NULL;
     }
@@ -517,11 +519,14 @@ static HICON TryGetAppIconFromAumid(HWND hWnd, bool largeIcon) {
                 PIDLIST_ABSOLUTE pidl = NULL;
                 if (SUCCEEDED(SHParseDisplayName(appsFolderPath, NULL, &pidl, 0, NULL)) && pidl) {
                     SHFILEINFOW sfi = {};
-                    if (SHGetFileInfoW((LPCWSTR)pidl,
-                                       0,
-                                       &sfi,
-                                       sizeof(sfi),
-                                       SHGFI_PIDL | SHGFI_ICON | (largeIcon ? SHGFI_LARGEICON : SHGFI_SMALLICON))) {
+                    // Request larger icon for medium and above (>24px)
+                    UINT flags = SHGFI_PIDL | SHGFI_ICON;
+                    if (desiredSizePx > 24) {
+                        flags |= SHGFI_LARGEICON;  // 32x32
+                    } else {
+                        flags |= SHGFI_SMALLICON;  // 16x16
+                    }
+                    if (SHGetFileInfoW((LPCWSTR)pidl, 0, &sfi, sizeof(sfi), flags)) {
                         hIcon = sfi.hIcon;
                     }
                     CoTaskMemFree(pidl);
@@ -1816,13 +1821,17 @@ static void LoadSettings() {
     wcscpy_s(g_settings.scrollWheelBehavior, v ? v : L"never"); Wh_FreeStringSetting(v);
     v = Wh_GetStringSetting(L"taskListOrientation");
     wcscpy_s(g_settings.taskListOrientation, v ? v : L"horizontal"); Wh_FreeStringSetting(v);
-    v = Wh_GetStringSetting(L"headerContentMode");
-    wcscpy_s(g_settings.headerContentMode, v ? v : L"horizontal"); Wh_FreeStringSetting(v);
-    if (wcscmp(g_settings.headerContentMode, L"horizontal") != 0 &&
-        wcscmp(g_settings.headerContentMode, L"vertical") != 0 &&
-        wcscmp(g_settings.headerContentMode, L"verticalLarge") != 0 &&
-        wcscmp(g_settings.headerContentMode, L"horizontalLarge") != 0) {
-        wcscpy_s(g_settings.headerContentMode, L"horizontal");
+    v = Wh_GetStringSetting(L"headerContentOrientation");
+    wcscpy_s(g_settings.headerContentOrientation, v ? v : L"horizontal"); Wh_FreeStringSetting(v);
+    if (wcscmp(g_settings.headerContentOrientation, L"horizontal") != 0 &&
+        wcscmp(g_settings.headerContentOrientation, L"vertical") != 0) {
+        wcscpy_s(g_settings.headerContentOrientation, L"horizontal");
+    }
+    v = Wh_GetStringSetting(L"iconSize");
+    wcscpy_s(g_settings.iconSize, v ? v : L"small"); Wh_FreeStringSetting(v);
+    if (wcscmp(g_settings.iconSize, L"small") != 0 &&
+        wcscmp(g_settings.iconSize, L"large") != 0) {
+        wcscpy_s(g_settings.iconSize, L"small");
     }
 
     g_settings.opacity = Wh_GetIntSetting(L"opacity");
