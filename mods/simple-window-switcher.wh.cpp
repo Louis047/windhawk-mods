@@ -111,7 +111,7 @@ Additional improvements made by [Asteski](https://github.com/Asteski).
   - altBacktick: Alt+Backtick
 - borderColor: "#FFFFFF"
   $name: Border Color
-  $description: Border color in HEX format
+  $description: Border color in HEX format.
 - useAccentColor: false
   $name: Use Accent Color for Borders
   $description: Use Windows accent color for selection and hover borders.
