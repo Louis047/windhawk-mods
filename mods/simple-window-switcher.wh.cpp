@@ -35,13 +35,13 @@ Additional improvements made by [Asteski](https://github.com/Asteski).
 /*
 - theme: none
   $name: Theme
-  $description: Visual theme for the switcher background
+  $description: Visual theme for the switcher background.
   $options:
   - none: None (transparent)
   - backdrop: Backdrop (Acrylic)
 - opacity: 100
   $name: Background Opacity
-  $description: Background opacity percentage (0-100), applies to None theme
+  $description: Background opacity percentage (0-100), applies to None theme.
 - colorScheme: system
   $name: Color Scheme
   $options:
@@ -50,20 +50,20 @@ Additional improvements made by [Asteski](https://github.com/Asteski).
   - dark: Dark
 - cornerPreference: none
   $name: Corner Preference
-  $description: Corner radius for the switcher window only
+  $description: Corner radius for the switcher window only.
   $options:
   - none: Do not round
   - round: Round
   - roundSmall: Round small
 - taskRoundedCorners: false
   $name: Round Task Borders and Close Button
-  $description: Apply small rounded corners to the selected task border and close button
+  $description: Apply small rounded corners to the selected task border and close button.
 - showThumbnails: true
   $name: Show Thumbnails
-  $description: Show DWM live thumbnail previews of windows
+  $description: Show DWM live thumbnail previews of windows.
 - taskListOrientation: horizontal
   $name: Task List Orientation
-  $description: Arrange tasks left-to-right or top-to-bottom
+  $description: Arrange tasks left-to-right or top-to-bottom.
   $options:
   - horizontal: Horizontal
   - vertical: Vertical
@@ -91,10 +91,10 @@ Additional improvements made by [Asteski](https://github.com/Asteski).
   $name: Maximum Height (percentage of screen height)
 - windowPadding: 20
   $name: Window Padding
-  $description: Padding around the entire window grid (pixels, before DPI scaling)
+  $description: Padding around the entire window grid (pixels, before DPI scaling).
 - showDelay: 0
   $name: Show Delay (ms)
-  $description: Delay in milliseconds before showing the switcher (0 = instant)
+  $description: Delay in milliseconds before showing the switcher (0 = instant).
 - scrollWheelBehavior: never
   $name: Scroll Wheel to Change Selection
   $options:
@@ -113,7 +113,7 @@ Additional improvements made by [Asteski](https://github.com/Asteski).
   $description: Border color in HEX format
 - useAccentColor: false
   $name: Use Accent Color for Borders
-  $description: Use Windows accent color for selection and hover borders
+  $description: Use Windows accent color for selection and hover borders.
 - centerTaskContent: false
   $name: Center Task Icon and Title
   $description: Center the icon and title together in each task row.
