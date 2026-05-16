@@ -58,6 +58,9 @@ Additional improvements made by [Asteski](https://github.com/Asteski).
 - taskRoundedCorners: false
   $name: Round Task Borders and Close Button
   $description: Apply small rounded corners to the selected task border and close button
+- showThumbnails: true
+  $name: Show Thumbnails
+  $description: Show DWM live thumbnail previews of windows
 - taskListOrientation: horizontal
   $name: Task List Orientation
   $description: Arrange tasks left-to-right or top-to-bottom
@@ -82,9 +85,6 @@ Additional improvements made by [Asteski](https://github.com/Asteski).
 - rowWidth: 0
   $name: Row Width
   $description: Width of each thumbnail tile in pixels (before DPI scaling). Set to 0 for automatic width based on window aspect ratio.
-- showThumbnails: true
-  $name: Show Thumbnails
-  $description: Show DWM live thumbnail previews of windows
 - maxWidthPercent: 80
   $name: Maximum Width (percentage of screen width)
 - maxHeightPercent: 80
@@ -101,6 +101,13 @@ Additional improvements made by [Asteski](https://github.com/Asteski).
   - never: Never
   - always: Always
   - stickyOnly: Only in sticky mode
+- backwardShortcut: altShiftTab
+  $name: Backward Shortcut
+  $description: Shortcut used to move backward in the switcher.
+  $options:
+  - altShiftTab: Alt+Shift+Tab (default)
+  - altShift: Alt+Shift
+  - altBacktick: Alt+Backtick
 - borderColor: "#FFFFFF"
   $name: Border Color
   $description: Border color in HEX format
@@ -114,9 +121,6 @@ Additional improvements made by [Asteski](https://github.com/Asteski).
   $name: Always Display Switcher on Primary Monitor
 - perMonitorWindows: false
   $name: Display Windows Only From the Monitor Containing the Cursor
-- enableAltShiftForBackward: false
-  $name: Enable Alt+Shift for Backward Tab
-  $description: When enabled, press Alt+Shift (without Tab) to move backward. Tab always moves forward.
 */
 // ==/WindhawkModSettings==
 
@@ -155,6 +159,7 @@ Additional improvements made by [Asteski](https://github.com/Asteski).
 #define SWS_HOTKEY_ALTSHIFTTAB      2
 #define SWS_HOTKEY_ALTCTRLTAB       3
 #define SWS_HOTKEY_ALTSHIFTCTRLTAB  4
+#define SWS_HOTKEY_ALTBACKTICK      5
 #define SWS_BG_DARK          RGB(32, 32, 32)
 #define SWS_BG_LIGHT         RGB(243, 243, 243)
 #define SWS_CONTOUR_DARK     RGB(255, 255, 255)
@@ -177,12 +182,12 @@ struct WindowEntry {
     SIZE effectiveSourceSize;  // Source size after cropping invisible frame
 };
 struct Settings {
-    WCHAR theme[32]; WCHAR colorScheme[32]; WCHAR cornerPreference[32]; WCHAR scrollWheelBehavior[32]; WCHAR taskListOrientation[32]; WCHAR headerContentOrientation[32]; WCHAR iconSize[32];
+    WCHAR theme[32]; WCHAR colorScheme[32]; WCHAR cornerPreference[32]; WCHAR scrollWheelBehavior[32]; WCHAR taskListOrientation[32]; WCHAR headerContentOrientation[32]; WCHAR iconSize[32]; WCHAR backwardShortcut[32];
     WCHAR borderColor[16];
     int opacity; int rowHeight; int rowWidth;
     int maxWidthPercent; int maxHeightPercent; int windowPadding; int showDelay;
     bool showThumbnails; bool useAccentColor; bool primaryMonitorOnly; bool perMonitorWindows; bool taskRoundedCorners;
-    bool centerTaskContent; bool enableAltShiftForBackward;
+    bool centerTaskContent;
 };
 
 static HWND g_hSwitcher = NULL;
@@ -220,6 +225,10 @@ static bool ScrollIs(const WCHAR* v) { return wcscmp(g_settings.scrollWheelBehav
 static bool LayoutIsVertical() { return wcscmp(g_settings.taskListOrientation, L"vertical") == 0; }
 static bool HeaderOrientationIs(const WCHAR* v) { return wcscmp(g_settings.headerContentOrientation, v) == 0; }
 static bool IconSizeIs(const WCHAR* v) { return wcscmp(g_settings.iconSize, v) == 0; }
+static bool BackwardShortcutIs(const WCHAR* v) { return wcscmp(g_settings.backwardShortcut, v) == 0; }
+static bool UseAltShiftTabBackward() { return BackwardShortcutIs(L"altShiftTab"); }
+static bool UseAltShiftBackward() { return BackwardShortcutIs(L"altShift"); }
+static bool UseAltBacktickBackward() { return BackwardShortcutIs(L"altBacktick"); }
 static bool HeaderIsVertical() {
     return HeaderOrientationIs(L"vertical");
 }
@@ -1599,16 +1608,38 @@ static int HitTestThumb(int x, int y) {
 static LRESULT CALLBACK SwitcherWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
     if (uMsg == WM_HOTKEY) {
         int id = (int)wParam;
-        // If Alt+Shift+Tab is disabled by setting, ignore its hotkey
-        if (g_settings.enableAltShiftForBackward && id == SWS_HOTKEY_ALTSHIFTTAB) {
+        bool isBackward = false;
+        bool isCtrl = false;
+
+        switch (id) {
+        case SWS_HOTKEY_ALTTAB:
+            break;
+        case SWS_HOTKEY_ALTSHIFTTAB:
+            if (!UseAltShiftTabBackward()) return 0;
+            isBackward = true;
+            break;
+        case SWS_HOTKEY_ALTCTRLTAB:
+            isCtrl = true;
+            break;
+        case SWS_HOTKEY_ALTSHIFTCTRLTAB:
+            if (!UseAltShiftTabBackward()) return 0;
+            isBackward = true;
+            isCtrl = true;
+            break;
+        case SWS_HOTKEY_ALTBACKTICK:
+            if (!UseAltBacktickBackward()) return 0;
+            isBackward = true;
+            break;
+        default:
             return 0;
         }
-        bool isShift = (id == SWS_HOTKEY_ALTSHIFTTAB || id == SWS_HOTKEY_ALTSHIFTCTRLTAB);
-        bool isCtrl = (id == SWS_HOTKEY_ALTCTRLTAB || id == SWS_HOTKEY_ALTSHIFTCTRLTAB);
+
         if (!g_isVisible) {
             ShowSwitcher(isCtrl);
-            if (isShift && g_windows.size() > 1) { g_selectedIndex = (int)g_windows.size() - 1; PaintSwitcher(); }
-        } else { CycleLinear(isShift ? -1 : 1); }
+            if (isBackward && g_windows.size() > 1) { g_selectedIndex = (int)g_windows.size() - 1; PaintSwitcher(); }
+        } else {
+            CycleLinear(isBackward ? -1 : 1);
+        }
         return 0;
     }
 
@@ -1635,7 +1666,7 @@ static LRESULT CALLBACK SwitcherWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPA
 
     switch (uMsg) {
     case WM_KEYUP:
-        if (g_isVisible && g_settings.enableAltShiftForBackward && wParam == VK_TAB) {
+        if (g_isVisible && UseAltShiftBackward() && wParam == VK_TAB) {
             bool altDown = (GetKeyState(VK_MENU) & 0x8000) != 0;
             bool shiftDown = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
             if (altDown && shiftDown) {
@@ -1647,7 +1678,7 @@ static LRESULT CALLBACK SwitcherWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPA
         if (wParam == VK_RETURN && g_isVisible) { SwitchToSelected(); return 0; }
         break;
     case WM_SYSKEYUP:
-        if (g_isVisible && g_settings.enableAltShiftForBackward && wParam == VK_TAB) {
+        if (g_isVisible && UseAltShiftBackward() && wParam == VK_TAB) {
             bool altDown = (GetKeyState(VK_MENU) & 0x8000) != 0;
             bool shiftDown = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
             if (altDown && shiftDown) {
@@ -1659,7 +1690,7 @@ static LRESULT CALLBACK SwitcherWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPA
     case WM_SYSKEYDOWN: case WM_KEYDOWN:
         if (g_isVisible) {
             // Block Alt+Shift+Tab from reaching the system if setting is enabled
-            if (g_settings.enableAltShiftForBackward && wParam == VK_TAB) {
+            if (UseAltShiftBackward() && wParam == VK_TAB) {
                 bool altDown = (GetKeyState(VK_MENU) & 0x8000) != 0;
                 bool shiftDown = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
                 if (altDown && shiftDown) {
@@ -1667,7 +1698,7 @@ static LRESULT CALLBACK SwitcherWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPA
                     return 0;
                 }
             }
-            if (g_settings.enableAltShiftForBackward &&
+            if (UseAltShiftBackward() &&
                 (wParam == VK_SHIFT || wParam == VK_LSHIFT || wParam == VK_RSHIFT)) {
                 bool isRepeat = (lParam & 0x40000000) != 0;
                 bool altDown = (GetKeyState(VK_MENU) & 0x8000) != 0;
@@ -1679,7 +1710,7 @@ static LRESULT CALLBACK SwitcherWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPA
 
             if (wParam == VK_TAB) {
                 bool shiftDown = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
-                bool backward = !g_settings.enableAltShiftForBackward && shiftDown;
+                bool backward = UseAltShiftTabBackward() && shiftDown;
                 CycleLinear(backward ? -1 : 1);
                 return 0;
             }
@@ -1792,6 +1823,7 @@ static void SWS_RegisterHotkeys() {
     RegisterHotKey(g_hSwitcher, SWS_HOTKEY_ALTSHIFTTAB, MOD_ALT | MOD_SHIFT, VK_TAB);
     RegisterHotKey(g_hSwitcher, SWS_HOTKEY_ALTCTRLTAB, MOD_ALT | MOD_CONTROL, VK_TAB);
     RegisterHotKey(g_hSwitcher, SWS_HOTKEY_ALTSHIFTCTRLTAB, MOD_ALT | MOD_SHIFT | MOD_CONTROL, VK_TAB);
+    RegisterHotKey(g_hSwitcher, SWS_HOTKEY_ALTBACKTICK, MOD_ALT, VK_OEM_3);
     g_hotkeysRegistered = true;
     Wh_Log(L"Hotkeys registered");
 }
@@ -1801,6 +1833,7 @@ static void SWS_UnregisterHotkeys() {
     UnregisterHotKey(g_hSwitcher, SWS_HOTKEY_ALTSHIFTTAB);
     UnregisterHotKey(g_hSwitcher, SWS_HOTKEY_ALTCTRLTAB);
     UnregisterHotKey(g_hSwitcher, SWS_HOTKEY_ALTSHIFTCTRLTAB);
+    UnregisterHotKey(g_hSwitcher, SWS_HOTKEY_ALTBACKTICK);
     g_hotkeysRegistered = false;
     Wh_Log(L"Hotkeys unregistered");
 }
@@ -1833,6 +1866,20 @@ static void LoadSettings() {
         wcscmp(g_settings.iconSize, L"large") != 0) {
         wcscpy_s(g_settings.iconSize, L"small");
     }
+    v = Wh_GetStringSetting(L"backwardShortcut");
+    if (v) {
+        wcscpy_s(g_settings.backwardShortcut, v);
+        Wh_FreeStringSetting(v);
+    } else {
+        // Backward compatibility with previous boolean setting.
+        wcscpy_s(g_settings.backwardShortcut,
+                 Wh_GetIntSetting(L"enableAltShiftForBackward") ? L"altShift" : L"altShiftTab");
+    }
+    if (wcscmp(g_settings.backwardShortcut, L"altShiftTab") != 0 &&
+        wcscmp(g_settings.backwardShortcut, L"altShift") != 0 &&
+        wcscmp(g_settings.backwardShortcut, L"altBacktick") != 0) {
+        wcscpy_s(g_settings.backwardShortcut, L"altShiftTab");
+    }
 
     g_settings.opacity = Wh_GetIntSetting(L"opacity");
     if (g_settings.opacity <= 0 || g_settings.opacity > 100) g_settings.opacity = 90;
@@ -1853,7 +1900,6 @@ static void LoadSettings() {
     g_settings.primaryMonitorOnly = Wh_GetIntSetting(L"primaryMonitorOnly");
     g_settings.perMonitorWindows = Wh_GetIntSetting(L"perMonitorWindows");
     g_settings.centerTaskContent = Wh_GetIntSetting(L"centerTaskContent");
-    g_settings.enableAltShiftForBackward = Wh_GetIntSetting(L"enableAltShiftForBackward");
 
     v = Wh_GetStringSetting(L"borderColor");
     wcscpy_s(g_settings.borderColor, v ? v : L"#FFFFFF"); Wh_FreeStringSetting(v);
