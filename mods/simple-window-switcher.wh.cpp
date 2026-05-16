@@ -20,7 +20,7 @@ Additional improvements made by [Asteski](https://github.com/Asteski).
 ## Features
 - Grid layout with live DWM thumbnail previews
 - Different Task List and Header Content layouts
-- Keyboard navigation (Tab/Shift+Tab, Arrow keys, Enter, Esc)
+- Keyboard navigation (Tab/Shift+Tab/Shift/Backtick, Arrow keys, Enter, Esc)
 - Mouse click to select, scroll wheel to cycle
 - Alt+Ctrl+Tab sticky mode
 - Theme support (None/Backdrop Acrylic)
@@ -28,6 +28,7 @@ Additional improvements made by [Asteski](https://github.com/Asteski).
 - Dark/light mode auto-detection
 - Custom border colors with optional Windows accent color
 - DPI-aware, multi-monitor aware
+- Rounded corners for switcher and task thumbnails (optional)
 */
 // ==/WindhawkModReadme==
 
